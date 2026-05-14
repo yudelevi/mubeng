@@ -52,6 +52,9 @@ Options:
                                      If value is less than 0 (e.g., -1), rotation will
                                      continue indefinitely
         --max-redirs <N>             Max. redirects allowed (default: 10)
+        --no-mitm                    Tunnel HTTPS via rotated upstream proxy instead of
+                                     terminating TLS. Preserves the client TLS handshake
+                                     end-to-end (e.g. for JA3 fingerprint preservation).
     -s, --sync                       Syncrounus mode
     -w, --watch                      Watch proxy file, live-reload from changes
 
