@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/mubeng/mubeng/internal/proxygateway"
 	"github.com/mubeng/mubeng/pkg/helper/awsurl"
 	"github.com/mubeng/mubeng/pkg/mubeng"
+	"h12.io/socks"
 )
 
 type requestResult struct {
@@ -202,7 +205,74 @@ func (p *Proxy) onConnect(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectA
 		}
 	}
 
+	if p.Options.NoMITM {
+		return goproxy.OkConnect, host
+	}
 	return goproxy.MitmConnect, host
+}
+
+func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, error) {
+	attempts := p.Options.MaxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		proxyAddr := p.rotateProxy()
+		conn, err := p.dialUpstream(proxyAddr, network, addr)
+		if err == nil {
+			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, proxyAddr)
+			return conn, nil
+		}
+		lastErr = err
+		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, proxyAddr, err)
+
+		if p.Options.RemoveOnErr {
+			p.removeProxy(proxyAddr)
+		}
+		if !p.Options.RotateOnErr {
+			break
+		}
+		if p.Options.MaxErrors >= 0 && i+1 >= p.Options.MaxErrors {
+			break
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("connect to %s failed: exhausted upstream attempts", addr)
+	}
+	return nil, lastErr
+}
+
+func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) {
+	u, err := url.Parse(proxyAddr)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy %q: %w", proxyAddr, err)
+	}
+
+	switch u.Scheme {
+	case "http", "https", "":
+		var authHandler func(req *http.Request)
+		if u.User != nil {
+			user := u.User.Username()
+			pass, _ := u.User.Password()
+			cred := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+			authHandler = func(connectReq *http.Request) {
+				connectReq.Header.Set("Proxy-Authorization", "Basic "+cred)
+			}
+		}
+		dial := p.HTTPProxy.NewConnectDialToProxyWithHandler(proxyAddr, authHandler)
+		if dial == nil {
+			return nil, fmt.Errorf("unsupported proxy URL: %s", proxyAddr)
+		}
+		return dial(network, addr)
+	case "socks4", "socks4a", "socks5":
+		// nolint: staticcheck
+		return socks.Dial(proxyAddr)(network, addr)
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme %q", u.Scheme)
+	}
 }
 
 // onResponse handles backend responses, and removing hop-by-hop headers
