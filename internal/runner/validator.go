@@ -56,6 +56,26 @@ func validate(opt *common.Options) error {
 		"random":  true,
 	}
 
+	if opt.SocksAddress != "" {
+		if opt.SocksFile == "" {
+			return errors.New("no SOCKS5 proxy file provided (-socks-file) for the SOCKS5 listener")
+		}
+
+		opt.SocksFile, err = filepath.Abs(opt.SocksFile)
+		if err != nil {
+			return err
+		}
+
+		if !validMethod[opt.SocksMethod] {
+			return fmt.Errorf("unknown method for %q", opt.SocksMethod)
+		}
+
+		opt.SocksProxyManager, err = proxymanager.New(opt.SocksFile)
+		if err != nil {
+			return err
+		}
+	}
+
 	if opt.Address != "" && !opt.Check {
 		if !validMethod[opt.Method] {
 			return fmt.Errorf("unknown method for %q", opt.Method)

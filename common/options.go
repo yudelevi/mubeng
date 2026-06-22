@@ -9,11 +9,15 @@ import (
 
 // Options consists of the configuration required.
 type Options struct {
-	ProxyManager *proxymanager.ProxyManager
-	Result       *os.File
-	Timeout      time.Duration
+	ProxyManager      *proxymanager.ProxyManager
+	SocksProxyManager *proxymanager.ProxyManager
+	Result            *os.File
+	Timeout           time.Duration
 
 	Address      string
+	SocksAddress string
+	SocksFile    string
+	SocksMethod  string
 	Auth         string
 	CC           string
 	Check        bool

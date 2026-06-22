@@ -12,6 +12,7 @@ import (
 var (
 	handler        *Proxy
 	server         *http.Server
+	socksServer    *SocksServer
 	metricsServer  *metrics.Server
 	metricsEnabled bool
 	dump           *httpretty.Logger

@@ -134,6 +134,9 @@ Here are all the options it supports.
 |-------------------------------  |-------------------------------------------------------------- |
 | -f, --file `<FILE>`             | Proxy file.                                                   |
 | -a, --address `<ADDR>:<PORT>`   | Run proxy server.                                             |
+| -S, --socks `<ADDR>:<PORT>`     | Run a SOCKS5 listener alongside the HTTP server.              |
+|     --socks-file `<FILE>`       | Proxy file for the SOCKS5 listener (required with `-S`).      |
+|     --socks-method `<METHOD>`   | Rotation method for the SOCKS5 listener (default: sequent).   |
 | -A, --auth `<USER>:<PASS>`      | Set authorization for proxy server.                           |
 | -d, --daemon                    | Daemonize proxy server.                                       |
 | -c, --check                     | To perform proxy live check.                                  |
@@ -411,7 +414,7 @@ This setup enables mubeng to automatically rotate traffic through multiple AWS r
 
 # Limitations
 
-Currently IP rotation runs the proxy server only as an HTTP protocol, not a SOCKSv4(A)/v5 protocol, even though the resource you have is SOCKSv4(A)/v5. In other words, the SOCKSv4(A)/v5 resource that you provide is used properly because it uses auto-switch transport on the client, but this proxy server **DOES NOT** switch to anything other than HTTP protocol.
+The `-a` (`--address`) IP rotator listens as an HTTP(S) proxy only. Clients that require a SOCKS5 entry point can use the `-S` (`--socks`) listener, which serves SOCKS5 (CONNECT) and rotates its own pool from `--socks-file`. Both listeners can run at once. Upstream proxies of any supported scheme (HTTP/S, SOCKSv4(A)/v5) work with either listener via the client-side auto-switch transport.
 
 # Contributors
 

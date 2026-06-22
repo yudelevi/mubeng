@@ -99,13 +99,13 @@ func (p *ProxyManager) Watch() (*fsnotify.Watcher, error) {
 
 // Reload proxy pool
 func (p *ProxyManager) Reload() error {
-	i := p.CurrentIndex
-
-	p, err := New(p.filepath)
+	fresh, err := New(p.filepath)
 	if err != nil {
 		return err
 	}
-	p.CurrentIndex = i
+
+	p.Proxies = fresh.Proxies
+	p.Count()
 
 	return nil
 }

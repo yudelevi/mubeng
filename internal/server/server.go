@@ -63,6 +63,12 @@ func Run(opt *common.Options) {
 		}
 		defer watcher.Close()
 
+		if opt.SocksProxyManager != nil {
+			if err := watcher.Add(opt.SocksFile); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		go watch(watcher)
 	}
 
@@ -85,6 +91,19 @@ func Run(opt *common.Options) {
 	}
 
 	log.Infof("%d proxies loaded", opt.ProxyManager.Count())
+
+	if opt.SocksAddress != "" {
+		socksServer = NewSocksServer(opt, handler)
+
+		log.Infof("%d SOCKS5 proxies loaded", opt.SocksProxyManager.Count())
+		log.Infof("[PID: %d] Starting SOCKS5 proxy server on %s", os.Getpid(), opt.SocksAddress)
+
+		go func() {
+			if err := socksServer.ListenAndServe(); err != nil {
+				log.Fatalf("SOCKS5 server error: %s", err)
+			}
+		}()
+	}
 
 	log.Infof("[PID: %d] Starting proxy server on %s", os.Getpid(), opt.Address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
