@@ -25,6 +25,10 @@ func Stop(ctx context.Context) {
 		_ = metricsServer.Shutdown(ctx)
 	}
 
+	if socksServer != nil {
+		_ = socksServer.Close()
+	}
+
 	_ = server.Shutdown(ctx)
 }
 
@@ -43,15 +47,26 @@ func watch(w *fsnotify.Watcher) {
 		select {
 		case event := <-w.Events:
 			if event.Op == 2 {
+				opt := handler.Options
+
+				if opt.SocksProxyManager != nil && event.Name == opt.SocksFile {
+					log.Info("SOCKS5 proxy file has changed, reloading...")
+
+					if err := opt.SocksProxyManager.Reload(); err != nil {
+						log.Fatal(err)
+					}
+
+					continue
+				}
+
 				log.Info("Proxy file has changed, reloading...")
 
-				err := handler.Options.ProxyManager.Reload()
-				if err != nil {
+				if err := opt.ProxyManager.Reload(); err != nil {
 					log.Fatal(err)
 				}
 
 				if metricsEnabled {
-					metrics.ProxyPoolSize.Set(float64(handler.Options.ProxyManager.Count()))
+					metrics.ProxyPoolSize.Set(float64(opt.ProxyManager.Count()))
 				}
 			}
 		case err := <-w.Errors:

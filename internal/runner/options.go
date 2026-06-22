@@ -19,6 +19,13 @@ func Options() *common.Options {
 	flag.StringVar(&opt.Address, "a", "", "")
 	flag.StringVar(&opt.Address, "address", "", "")
 
+	flag.StringVar(&opt.SocksAddress, "S", "", "")
+	flag.StringVar(&opt.SocksAddress, "socks", "", "")
+
+	flag.StringVar(&opt.SocksFile, "socks-file", "", "")
+
+	flag.StringVar(&opt.SocksMethod, "socks-method", "sequent", "")
+
 	flag.StringVar(&opt.Auth, "A", "", "")
 	flag.StringVar(&opt.Auth, "auth", "", "")
 

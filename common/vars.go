@@ -41,6 +41,12 @@ Options:
 
   IP ROTATOR
     -a, --address <ADDR>:<PORT>      Run proxy server
+    -S, --socks <ADDR>:<PORT>        Run a SOCKS5 listener alongside the HTTP
+                                     server, rotating its own pool (--socks-file)
+        --socks-file <FILE>          Proxy file for the SOCKS5 listener
+                                     (required with -S; separate pool from -f)
+        --socks-method <METHOD>      Rotation method for the SOCKS5 listener
+                                     (sequent/random) (default: sequent)
     -A, --auth <USER>:<PASS>         Set authorization for proxy server
     -d, --daemon                     Daemonize proxy server
     -m, --method <METHOD>            Rotation method (sequent/random) (default: sequent)
@@ -64,6 +70,7 @@ Examples:
   mubeng -f proxies.txt --check --output-format "{{proxy}} | {{country}} | {{duration}}"
   mubeng -a localhost:8080 -f live.txt -r 10 -w
   mubeng -a localhost:8080 -f live.txt --metrics :9090
+  mubeng -a localhost:8080 -f http.txt -S localhost:1080 --socks-file socks5.txt
 
 `
 )

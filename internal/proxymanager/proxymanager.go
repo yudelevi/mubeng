@@ -24,8 +24,6 @@ func init() {
 	// TODO(dwisiswant0): deprecated, update this later.
 	// nolint: staticcheck
 	rand.Seed(time.Now().UnixNano())
-
-	manager = &ProxyManager{CurrentIndex: -1}
 }
 
 // New initialize ProxyManager
@@ -38,8 +36,7 @@ func New(filename string) (*ProxyManager, error) {
 	}
 	defer file.Close()
 
-	manager.Proxies = []string{}
-	manager.filepath = filename
+	manager := &ProxyManager{CurrentIndex: -1, filepath: filename}
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
