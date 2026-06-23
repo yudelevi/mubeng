@@ -18,6 +18,7 @@ const (
 	socksMethodNoAuth    = 0x00
 	socksMethodNoAccept  = 0xFF
 	socksCmdConnect      = 0x01
+	socksCmdUDPAssociate = 0x03
 	socksAtypIPv4        = 0x01
 	socksAtypDomainName  = 0x03
 	socksAtypIPv6        = 0x04
@@ -28,23 +29,29 @@ const (
 	socksHandshakeTimeout = 30 * time.Second
 )
 
-// SocksServer is a minimal SOCKS5 (RFC 1928) CONNECT proxy. Each accepted
-// connection is tunneled through an upstream proxy rotated from its own pool
+// SocksServer is a minimal SOCKS5 (RFC 1928) proxy. Each accepted connection is
+// tunneled through an upstream proxy rotated from its own pool
 // (Options.SocksProxyManager), reusing the same upstream-dial path as the HTTP
-// listener so SOCKS v4(A)/v5 and HTTP/S upstreams are all supported. Only the
-// CONNECT command is handled; BIND and UDP ASSOCIATE are rejected.
+// listener so SOCKS v4(A)/v5 and HTTP/S upstreams are all supported. The
+// CONNECT and UDP ASSOCIATE commands are handled; BIND is rejected. UDP
+// ASSOCIATE only works through socks5 upstreams that themselves support it.
 type SocksServer struct {
 	opt      *common.Options
 	listener net.Listener
 	dial     func(network, addr string) (net.Conn, error)
+	// rotate returns the next upstream proxy URL for a UDP association. It is
+	// separate from dial because UDP ASSOCIATE needs the raw socks5:// URL to
+	// run its own handshake (h12.io/socks has no UDP support).
+	rotate func() (string, error)
 }
 
 // NewSocksServer builds a SOCKS5 listener that shares the handler's upstream
 // dial logic and rotation/error options.
 func NewSocksServer(opt *common.Options, handler *Proxy) *SocksServer {
 	return &SocksServer{
-		opt:  opt,
-		dial: func(network, addr string) (net.Conn, error) { return handler.dialViaSocksPool(network, addr) },
+		opt:    opt,
+		dial:   func(network, addr string) (net.Conn, error) { return handler.dialViaSocksPool(network, addr) },
+		rotate: func() (string, error) { return opt.SocksProxyManager.Rotate(opt.SocksMethod) },
 	}
 }
 
@@ -84,9 +91,14 @@ func (s *SocksServer) handle(conn net.Conn) {
 
 	_ = conn.SetDeadline(time.Now().Add(socksHandshakeTimeout))
 
-	target, err := s.negotiate(conn)
+	cmd, target, err := s.negotiate(conn)
 	if err != nil {
 		log.Debugf("%s SOCKS5 handshake: %s", conn.RemoteAddr(), err)
+		return
+	}
+
+	if cmd == socksCmdUDPAssociate {
+		s.handleUDPAssociate(conn)
 		return
 	}
 
@@ -107,54 +119,56 @@ func (s *SocksServer) handle(conn net.Conn) {
 	relay(conn, upstream)
 }
 
-// negotiate runs SOCKS5 method selection and reads the CONNECT request,
-// returning the requested "host:port" target. Domain names are forwarded
-// unresolved so the upstream proxy performs DNS resolution at its exit.
-func (s *SocksServer) negotiate(conn net.Conn) (string, error) {
+// negotiate runs SOCKS5 method selection and reads the request, returning the
+// command and the requested "host:port" target. Domain names are forwarded
+// unresolved so the upstream proxy performs DNS resolution at its exit. For UDP
+// ASSOCIATE the returned target is the client's advertised DST (often 0.0.0.0:0)
+// and is ignored by the caller.
+func (s *SocksServer) negotiate(conn net.Conn) (byte, string, error) {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return "", err
+		return 0, "", err
 	}
 	if header[0] != socksVersion5 {
-		return "", fmt.Errorf("unsupported SOCKS version %d", header[0])
+		return 0, "", fmt.Errorf("unsupported SOCKS version %d", header[0])
 	}
 
 	methods := make([]byte, int(header[1]))
 	if _, err := io.ReadFull(conn, methods); err != nil {
-		return "", err
+		return 0, "", err
 	}
 	if !containsByte(methods, socksMethodNoAuth) {
 		_, _ = conn.Write([]byte{socksVersion5, socksMethodNoAccept})
-		return "", errors.New("client offered no acceptable auth method")
+		return 0, "", errors.New("client offered no acceptable auth method")
 	}
 	if _, err := conn.Write([]byte{socksVersion5, socksMethodNoAuth}); err != nil {
-		return "", err
+		return 0, "", err
 	}
 
 	req := make([]byte, 4)
 	if _, err := io.ReadFull(conn, req); err != nil {
-		return "", err
+		return 0, "", err
 	}
 	if req[0] != socksVersion5 {
-		return "", fmt.Errorf("unsupported SOCKS version %d", req[0])
+		return 0, "", fmt.Errorf("unsupported SOCKS version %d", req[0])
 	}
-	if req[1] != socksCmdConnect {
+	if req[1] != socksCmdConnect && req[1] != socksCmdUDPAssociate {
 		_ = reply(conn, socksReplyCmdNoSupp)
-		return "", fmt.Errorf("unsupported command %d", req[1])
+		return 0, "", fmt.Errorf("unsupported command %d", req[1])
 	}
 
 	host, err := readHost(conn, req[3])
 	if err != nil {
 		_ = reply(conn, socksReplyGeneralErr)
-		return "", err
+		return 0, "", err
 	}
 
 	portBuf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBuf); err != nil {
-		return "", err
+		return 0, "", err
 	}
 
-	return net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(portBuf)))), nil
+	return req[1], net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(portBuf)))), nil
 }
 
 func readHost(conn net.Conn, atyp byte) (string, error) {
