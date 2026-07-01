@@ -16,7 +16,13 @@ const (
 	socksVersion5 = 0x05
 
 	socksMethodNoAuth    = 0x00
+	socksMethodUserPass  = 0x02
 	socksMethodNoAccept  = 0xFF
+
+	socksAuthVersion = 0x01
+	socksAuthSuccess = 0x00
+	socksAuthFailure = 0x01
+
 	socksCmdConnect      = 0x01
 	socksCmdUDPAssociate = 0x03
 	socksAtypIPv4        = 0x01
@@ -38,20 +44,32 @@ const (
 type SocksServer struct {
 	opt      *common.Options
 	listener net.Listener
-	dial     func(network, addr string) (net.Conn, error)
-	// rotate returns the next upstream proxy URL for a UDP association. It is
-	// separate from dial because UDP ASSOCIATE needs the raw socks5:// URL to
-	// run its own handshake (h12.io/socks has no UDP support).
-	rotate func() (string, error)
+	dial     func(network, addr, key string) (net.Conn, error)
+	// rotate returns the upstream proxy URL for a UDP association given the
+	// session key. It is separate from dial because UDP ASSOCIATE needs the raw
+	// socks5:// URL to run its own handshake (h12.io/socks has no UDP support).
+	rotate func(key string) (string, error)
+	// drop clears a sticky pin (nil when sticky is disabled or in tests).
+	drop func(key string)
 }
 
 // NewSocksServer builds a SOCKS5 listener that shares the handler's upstream
 // dial logic and rotation/error options.
 func NewSocksServer(opt *common.Options, handler *Proxy) *SocksServer {
 	return &SocksServer{
-		opt:    opt,
-		dial:   func(network, addr string) (net.Conn, error) { return handler.dialViaSocksPool(network, addr) },
-		rotate: func() (string, error) { return opt.SocksProxyManager.Rotate(opt.SocksMethod) },
+		opt:  opt,
+		dial: func(network, addr, key string) (net.Conn, error) { return handler.dialViaSocksPool(network, addr, key) },
+		rotate: func(key string) (string, error) {
+			if opt.SocksSticky != nil && key != "" {
+				return opt.SocksSticky.Get(key)
+			}
+			return opt.SocksProxyManager.Rotate(opt.SocksMethod)
+		},
+		drop: func(key string) {
+			if opt.SocksSticky != nil {
+				opt.SocksSticky.Drop(key)
+			}
+		},
 	}
 }
 
@@ -91,18 +109,18 @@ func (s *SocksServer) handle(conn net.Conn) {
 
 	_ = conn.SetDeadline(time.Now().Add(socksHandshakeTimeout))
 
-	cmd, target, err := s.negotiate(conn)
+	cmd, target, sessionKey, err := s.negotiate(conn)
 	if err != nil {
 		log.Debugf("%s SOCKS5 handshake: %s", conn.RemoteAddr(), err)
 		return
 	}
 
 	if cmd == socksCmdUDPAssociate {
-		s.handleUDPAssociate(conn)
+		s.handleUDPAssociate(conn, sessionKey)
 		return
 	}
 
-	upstream, err := s.dial("tcp", target)
+	upstream, err := s.dial("tcp", target, sessionKey)
 	if err != nil {
 		log.Errorf("%s SOCKS5 %s: %s", conn.RemoteAddr(), target, err)
 		_ = reply(conn, socksReplyGeneralErr)
@@ -124,51 +142,107 @@ func (s *SocksServer) handle(conn net.Conn) {
 // unresolved so the upstream proxy performs DNS resolution at its exit. For UDP
 // ASSOCIATE the returned target is the client's advertised DST (often 0.0.0.0:0)
 // and is ignored by the caller.
-func (s *SocksServer) negotiate(conn net.Conn) (byte, string, error) {
+func (s *SocksServer) negotiate(conn net.Conn) (byte, string, string, error) {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(conn, header); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	if header[0] != socksVersion5 {
-		return 0, "", fmt.Errorf("unsupported SOCKS version %d", header[0])
+		return 0, "", "", fmt.Errorf("unsupported SOCKS version %d", header[0])
 	}
 
 	methods := make([]byte, int(header[1]))
 	if _, err := io.ReadFull(conn, methods); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
-	if !containsByte(methods, socksMethodNoAuth) {
+
+	// Prefer username/password (0x02) when offered so the username can serve as
+	// the sticky session key; otherwise fall back to no-auth (0x00). cloakbrowser's
+	// Chromium offers ONLY 0x02 when per-context credentials are set, and only
+	// 0x00 when they are not.
+	selected := byte(socksMethodNoAccept)
+	switch {
+	case containsByte(methods, socksMethodUserPass):
+		selected = socksMethodUserPass
+	case containsByte(methods, socksMethodNoAuth):
+		selected = socksMethodNoAuth
+	}
+	if selected == socksMethodNoAccept {
 		_, _ = conn.Write([]byte{socksVersion5, socksMethodNoAccept})
-		return 0, "", errors.New("client offered no acceptable auth method")
+		return 0, "", "", errors.New("client offered no acceptable auth method")
 	}
-	if _, err := conn.Write([]byte{socksVersion5, socksMethodNoAuth}); err != nil {
-		return 0, "", err
+	if _, err := conn.Write([]byte{socksVersion5, selected}); err != nil {
+		return 0, "", "", err
+	}
+
+	var sessionKey string
+	if selected == socksMethodUserPass {
+		user, err := readUserPassAuth(conn)
+		if err != nil {
+			return 0, "", "", err
+		}
+		sessionKey = user
 	}
 
 	req := make([]byte, 4)
 	if _, err := io.ReadFull(conn, req); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	if req[0] != socksVersion5 {
-		return 0, "", fmt.Errorf("unsupported SOCKS version %d", req[0])
+		return 0, "", "", fmt.Errorf("unsupported SOCKS version %d", req[0])
 	}
 	if req[1] != socksCmdConnect && req[1] != socksCmdUDPAssociate {
 		_ = reply(conn, socksReplyCmdNoSupp)
-		return 0, "", fmt.Errorf("unsupported command %d", req[1])
+		return 0, "", "", fmt.Errorf("unsupported command %d", req[1])
 	}
 
 	host, err := readHost(conn, req[3])
 	if err != nil {
 		_ = reply(conn, socksReplyGeneralErr)
-		return 0, "", err
+		return 0, "", "", err
 	}
 
 	portBuf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBuf); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 
-	return req[1], net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(portBuf)))), nil
+	return req[1], net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(portBuf)))), sessionKey, nil
+}
+
+// readUserPassAuth runs the RFC1929 username/password sub-negotiation, returning
+// the username (the session key). The password is read but not validated — it is
+// only a routing tag; the upstream pool is IP-whitelisted. A success reply is
+// always sent so any credential is accepted.
+func readUserPassAuth(conn net.Conn) (string, error) {
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(conn, head); err != nil {
+		return "", err
+	}
+	if head[0] != socksAuthVersion {
+		_, _ = conn.Write([]byte{socksAuthVersion, socksAuthFailure})
+		return "", fmt.Errorf("unsupported auth version %d", head[0])
+	}
+
+	user := make([]byte, int(head[1]))
+	if _, err := io.ReadFull(conn, user); err != nil {
+		return "", err
+	}
+
+	plen := make([]byte, 1)
+	if _, err := io.ReadFull(conn, plen); err != nil {
+		return "", err
+	}
+	pass := make([]byte, int(plen[0]))
+	if _, err := io.ReadFull(conn, pass); err != nil {
+		return "", err
+	}
+
+	if _, err := conn.Write([]byte{socksAuthVersion, socksAuthSuccess}); err != nil {
+		return "", err
+	}
+
+	return string(user), nil
 }
 
 func readHost(conn net.Conn, atyp byte) (string, error) {
@@ -230,15 +304,23 @@ func containsByte(haystack []byte, needle byte) bool {
 
 // dialViaSocksPool rotates the SOCKS5 upstream pool and dials addr through it,
 // retrying on failure per the shared rotate/remove-on-error options.
-func (p *Proxy) dialViaSocksPool(network, addr string) (net.Conn, error) {
+func (p *Proxy) dialViaSocksPool(network, addr, key string) (net.Conn, error) {
 	attempts := p.Options.MaxRetries + 1
 	if attempts < 1 {
 		attempts = 1
 	}
 
+	sticky := p.Options.SocksSticky != nil && key != ""
+
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		proxyAddr, err := p.Options.SocksProxyManager.Rotate(p.Options.SocksMethod)
+		var proxyAddr string
+		var err error
+		if sticky {
+			proxyAddr, err = p.Options.SocksSticky.Get(key)
+		} else {
+			proxyAddr, err = p.Options.SocksProxyManager.Rotate(p.Options.SocksMethod)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -251,6 +333,9 @@ func (p *Proxy) dialViaSocksPool(network, addr string) (net.Conn, error) {
 		lastErr = err
 		log.Debugf("SOCKS5 CONNECT %s via %s failed: %s", addr, proxyAddr, err)
 
+		if sticky {
+			p.Options.SocksSticky.Drop(key)
+		}
 		if p.Options.RemoveOnErr {
 			if rmErr := p.Options.SocksProxyManager.RemoveProxy(proxyAddr); rmErr != nil {
 				log.Debug(rmErr)

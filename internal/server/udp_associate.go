@@ -31,7 +31,7 @@ const (
 //
 // Any failure before the client reply is sent results in a clean general-error
 // reply so the client (e.g. Chrome's QUIC) falls back to TCP instead of hanging.
-func (s *SocksServer) handleUDPAssociate(clientCtrl net.Conn) {
+func (s *SocksServer) handleUDPAssociate(clientCtrl net.Conn, key string) {
 	bindIP := listenIP(clientCtrl.LocalAddr())
 
 	clientRelay, err := net.ListenUDP("udp", &net.UDPAddr{IP: bindIP, Port: 0})
@@ -42,8 +42,11 @@ func (s *SocksServer) handleUDPAssociate(clientCtrl net.Conn) {
 	}
 	defer clientRelay.Close()
 
-	upstreamCtrl, upstreamRelayAddr, err := s.dialUpstreamUDPAssociate()
+	upstreamCtrl, upstreamRelayAddr, err := s.dialUpstreamUDPAssociate(key)
 	if err != nil {
+		if s.drop != nil {
+			s.drop(key)
+		}
 		log.Debugf("%s SOCKS5 UDP associate: %s", clientCtrl.RemoteAddr(), err)
 		_ = reply(clientCtrl, socksReplyGeneralErr)
 		return
@@ -134,8 +137,8 @@ const udpHeaderMinLen = 2 + 1 + 1 + net.IPv4len + 2
 // upstream's UDP relay address to send datagrams to. Only socks5 upstreams with
 // no-auth (IP-whitelisted) are supported, matching the Proxyrack residential
 // pool.
-func (s *SocksServer) dialUpstreamUDPAssociate() (net.Conn, *net.UDPAddr, error) {
-	proxyAddr, err := s.rotate()
+func (s *SocksServer) dialUpstreamUDPAssociate(key string) (net.Conn, *net.UDPAddr, error) {
+	proxyAddr, err := s.rotate(key)
 	if err != nil {
 		return nil, nil, err
 	}

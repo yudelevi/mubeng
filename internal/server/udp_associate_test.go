@@ -178,7 +178,7 @@ func startUDPSocksServer(t *testing.T, upstreamURL string) string {
 
 	s := &SocksServer{
 		listener: ln,
-		rotate:   func() (string, error) { return upstreamURL, nil },
+		rotate:   func(key string) (string, error) { return upstreamURL, nil },
 	}
 	go func() {
 		for {
