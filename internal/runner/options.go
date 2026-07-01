@@ -81,6 +81,9 @@ func Options() *common.Options {
 
 	flag.BoolVar(&opt.NoMITM, "no-mitm", false, "")
 
+	flag.BoolVar(&opt.Sticky, "sticky", false, "")
+	flag.DurationVar(&opt.StickyTTL, "sticky-ttl", 10*time.Minute, "")
+
 	flag.Usage = func() {
 		showBanner()
 		showUsage()

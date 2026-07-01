@@ -39,4 +39,9 @@ type Options struct {
 	MaxRedirects int
 	MaxRetries   int
 	NoMITM       bool
+	Sticky       bool
+	StickyTTL    time.Duration
+
+	HTTPSticky  *proxymanager.Sticky
+	SocksSticky *proxymanager.Sticky
 }

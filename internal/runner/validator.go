@@ -37,6 +37,10 @@ func validate(opt *common.Options) error {
 		defer os.Remove(opt.File)
 	}
 
+	if opt.Sticky && opt.Auth != "" {
+		return errors.New("-sticky cannot be combined with -A/--auth (the username is the session key)")
+	}
+
 	if opt.File == "" {
 		return errors.New("no proxy file provided")
 	}
