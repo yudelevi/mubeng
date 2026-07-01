@@ -26,11 +26,11 @@ import (
 )
 
 type requestResult struct {
-	response    *http.Response
-	err         error
-	proxy       string
-	retryCount  int
-	startTime   time.Time
+	response   *http.Response
+	err        error
+	proxy      string
+	retryCount int
+	startTime  time.Time
 }
 
 // onRequest handles client request

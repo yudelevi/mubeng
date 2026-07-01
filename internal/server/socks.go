@@ -15,9 +15,9 @@ import (
 const (
 	socksVersion5 = 0x05
 
-	socksMethodNoAuth    = 0x00
-	socksMethodUserPass  = 0x02
-	socksMethodNoAccept  = 0xFF
+	socksMethodNoAuth   = 0x00
+	socksMethodUserPass = 0x02
+	socksMethodNoAccept = 0xFF
 
 	socksAuthVersion = 0x01
 	socksAuthSuccess = 0x00
