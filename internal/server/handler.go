@@ -51,13 +51,15 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 
 	resChan := make(chan requestResult)
 
+	sessionKey := proxyAuthUser(req)
+
 	go func(r *http.Request) {
 		log.Debugf("%s %s %s", r.RemoteAddr, r.Method, r.URL)
 
 		result := requestResult{startTime: time.Now()}
 		i := 0
 		for {
-			proxy := p.rotateProxy()
+			proxy := p.pickProxy(sessionKey)
 			result.proxy = proxy
 
 			retryablehttpClient, err := p.getClient(r, proxy)
@@ -88,6 +90,10 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 					result.retryCount = i
 					resChan <- result
 					return
+				}
+
+				if p.Options.HTTPSticky != nil && sessionKey != "" {
+					p.Options.HTTPSticky.Drop(sessionKey)
 				}
 
 				if p.Options.RemoveOnErr {
@@ -217,9 +223,11 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 		attempts = 1
 	}
 
+	sessionKey := proxyAuthUser(req)
+
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		proxyAddr := p.rotateProxy()
+		proxyAddr := p.pickProxy(sessionKey)
 		conn, err := p.dialUpstream(proxyAddr, network, addr)
 		if err == nil {
 			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, proxyAddr)
@@ -228,6 +236,9 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 		lastErr = err
 		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, proxyAddr, err)
 
+		if p.Options.HTTPSticky != nil && sessionKey != "" {
+			p.Options.HTTPSticky.Drop(sessionKey)
+		}
 		if p.Options.RemoveOnErr {
 			p.removeProxy(proxyAddr)
 		}
@@ -282,6 +293,43 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 	}
 
 	return resp
+}
+
+// proxyAuthUser extracts the username from a Basic Proxy-Authorization header,
+// which serves as the HTTP sticky session key. Returns "" when the header is
+// absent or malformed, so no-session requests take the plain rotate path.
+func proxyAuthUser(req *http.Request) string {
+	auth := req.Header.Get("Proxy-Authorization")
+	if auth == "" {
+		return ""
+	}
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Basic") {
+		return ""
+	}
+	dec, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	creds := string(dec)
+	if i := strings.IndexByte(creds, ':'); i >= 0 {
+		return creds[:i]
+	}
+	return creds
+}
+
+// pickProxy selects the upstream for a request. With sticky enabled and a
+// non-empty key it returns the session-pinned upstream; otherwise it falls back
+// to the counter-based rotateProxy path unchanged.
+func (p *Proxy) pickProxy(key string) string {
+	if p.Options.HTTPSticky != nil && key != "" {
+		proxy, err := p.Options.HTTPSticky.Get(key)
+		if err != nil {
+			log.Fatalf("Could not pin proxy IP: %s", err)
+		}
+		return proxy
+	}
+	return p.rotateProxy()
 }
 
 func (p *Proxy) rotateProxy() string {

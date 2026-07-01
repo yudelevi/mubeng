@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -216,6 +217,67 @@ func TestConnectMITM_Default(t *testing.T) {
 	case got := <-recvCh:
 		t.Fatalf("origin should not see bytes under MITM; got %q", got)
 	case <-time.After(1500 * time.Millisecond):
+	}
+}
+
+func TestProxyAuthUser(t *testing.T) {
+	req, _ := http.NewRequest("GET", "http://x/", nil)
+	req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("sess-42:pw")))
+	if got := proxyAuthUser(req); got != "sess-42" {
+		t.Fatalf("proxyAuthUser = %q, want sess-42", got)
+	}
+
+	bare, _ := http.NewRequest("GET", "http://x/", nil)
+	if got := proxyAuthUser(bare); got != "" {
+		t.Fatalf("no-auth proxyAuthUser = %q, want empty", got)
+	}
+}
+
+func httpStickyProxy(t *testing.T, method string) (*Proxy, *proxymanager.Sticky) {
+	t.Helper()
+	f, err := os.CreateTemp("", "mubeng-http-sticky-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	_, _ = f.WriteString("http://a:1\nhttp://b:2\nhttp://c:3\n")
+	f.Close()
+
+	pm, err := proxymanager.New(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sticky := proxymanager.NewSticky(pm, method, time.Minute)
+	t.Cleanup(sticky.Close)
+
+	p := &Proxy{Options: &common.Options{ProxyManager: pm, Method: method, HTTPSticky: sticky, Rotate: 1}}
+	return p, sticky
+}
+
+func TestPickProxyStickyReuse(t *testing.T) {
+	p, sticky := httpStickyProxy(t, "random")
+
+	first := p.pickProxy("alice")
+	for i := 0; i < 10; i++ {
+		if got := p.pickProxy("alice"); got != first {
+			t.Fatalf("sticky pick drifted: %q != %q", got, first)
+		}
+	}
+	if sticky.Len() != 1 {
+		t.Fatalf("want 1 pin for one key, got %d", sticky.Len())
+	}
+}
+
+// Backward-compat: an empty key (no Proxy-Authorization) must still return a
+// proxy via the rotate path and must NOT create a pin.
+func TestPickProxyEmptyKeyNoPin(t *testing.T) {
+	p, sticky := httpStickyProxy(t, "sequent")
+
+	if p.pickProxy("") == "" {
+		t.Fatal("empty-key pick returned no proxy")
+	}
+	if sticky.Len() != 0 {
+		t.Fatalf("empty key must not pin; Len=%d", sticky.Len())
 	}
 }
 
