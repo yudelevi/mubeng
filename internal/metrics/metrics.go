@@ -14,6 +14,7 @@ const (
 	LabelErrorType = "error_type"
 	LabelOutcome   = "outcome"
 	LabelRetried   = "retried"
+	LabelPool      = "pool"
 
 	OutcomeSuccess = "success"
 	OutcomeFailure = "failure"
@@ -106,5 +107,14 @@ var (
 			Help:      "Total requests per proxy with success/fail breakdown",
 		},
 		[]string{LabelProxy, LabelStatus},
+	)
+
+	StickyPins = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "sticky_pins",
+			Help:      "Current number of sticky session pins per pool",
+		},
+		[]string{LabelPool},
 	)
 )
