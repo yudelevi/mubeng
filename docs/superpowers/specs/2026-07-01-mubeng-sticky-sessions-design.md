@@ -2,43 +2,33 @@
 
 **Date:** 2026-07-01
 **Repo:** `~/dev/mubeng` (fork `github.com/yudelevi/mubeng`)
-**Status:** ON HOLD — core assumption invalidated (see Blocker below); awaiting a
-direction decision before revision.
+**Status:** approved design, ready for implementation plan.
 
-## Blocker (found 2026-07-01, post-approval)
+## Verified client behavior (2026-07-01)
 
-The design below keys SOCKS sessions off an RFC1929 username. **Chromium does not
-support SOCKS5 proxy authentication** and never sends one. cloakbrowser (the
-br_scrape engine) is plain Playwright **Chromium** pointed at
-`socks5://127.0.0.1:3154`, so over that listener every browser context is an
-indistinguishable no-auth connection from `127.0.0.1` — there is no channel to
-carry a session id. The "SOCKS username = key" scheme cannot work for this stack.
+An earlier revision of this spec flagged a blocker on the assumption that
+Chromium cannot do SOCKS5 auth. **That was wrong for this stack** — cloakbrowser
+ships a *custom-patched* Chromium (v145) that supports SOCKS5 authentication.
+Confirmed empirically: launched cloakbrowser through a local SOCKS5 sniffer with
+`proxy="socks5://sess-CLAUDE-TEST-123:secretpw@127.0.0.1:PORT"`; the browser
+offered **only** auth method `0x02` and sent RFC1929
+`username='sess-CLAUDE-TEST-123'` on every connection, and navigation succeeded.
 
-The only channel Chromium populates is **HTTP proxy auth**. Viable path:
+Implications the implementation must honor:
 
-- Point cloakbrowser at the HTTP listener: `PROXY_URL=http://<session>:x@127.0.0.1:3153`
-  (per browser context; username = the per-domain session id).
-- mubeng runs `-no-mitm`, keys the pin off the CONNECT's `Proxy-Authorization`
-  username (already available in `connectDial`).
-- mubeng must issue a `407 Proxy-Authentication-Required` on an un-authed CONNECT
-  to elicit the username (Chromium only sends creds after a 407; Playwright
-  answers it). Small addition to `onConnect`.
+- When per-context credentials are set, cloakbrowser's Chromium offers **only
+  method `0x02`** (not `0x00`). So `negotiate()` must accept `0x02` and must no
+  longer *require* `0x00` — it accepts whichever of `0x00` / `0x02` the client
+  offers. (Credential-less clients still offer `0x00`; that path stays.)
+- For the HTTP listener, the same fork sends `Proxy-Authorization`
+  **preemptively** (`browser.py` `_resolve_proxy_config` → `--proxy-server` with
+  inline creds). So the HTTP path needs **no 407 challenge** — mubeng just reads
+  the CONNECT's `Proxy-Authorization` username.
 
-Consequences: the SOCKS work (RFC1929 in `negotiate()`, UDP-ASSOCIATE pinning)
-is **not needed** if cloakbrowser moves to `:3153` — sticky lives on the HTTP
-listener only. And because Chromium only reveals the username after a 407, the
-sticky HTTP port is effectively "strict" (auth-required), not fallback-rotate.
-
-Directions on the table (pending user decision):
-1. Move cloakbrowser to HTTP `:3153`, sticky-by-Proxy-Auth username, drop SOCKS
-   sticky. (Recommended — only path that works with Chromium today.)
-2. Keep SOCKS `:3154`, revisit a SOCKS5-auth-capable engine (Firefox/camoufox)
-   — blocked on the firefox resolution-quality work that routes FF→chromium now.
-
-The sections below reflect the pre-blocker (SOCKS-username) design and will be
-revised once a direction is chosen.
-
----
+Client change required (handled in br_scrape): set `PROXY_URL` /per-context proxy
+username to the per-domain session id, e.g.
+`socks5://<session>:x@127.0.0.1:3154`. Today it is credential-less
+(`socks5://127.0.0.1:3154`), which is why current traffic rotates.
 
 
 ## Problem
