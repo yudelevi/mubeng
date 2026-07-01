@@ -61,6 +61,10 @@ Options:
         --no-mitm                    Tunnel HTTPS via rotated upstream proxy instead of
                                      terminating TLS. Preserves the client TLS handshake
                                      end-to-end (e.g. for JA3 fingerprint preservation).
+        --sticky                     Pin one upstream exit IP per session key (SOCKS
+                                     RFC1929 / HTTP Proxy-Authorization username).
+                                     Default off. Cannot be combined with -A.
+        --sticky-ttl <DUR>           Idle TTL for sticky pins (default: 10m)
     -s, --sync                       Syncrounus mode
     -w, --watch                      Watch proxy file, live-reload from changes
     -M, --metrics <ADDR>:<PORT>      Prometheus metrics server address (e.g., :9090)

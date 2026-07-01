@@ -152,6 +152,8 @@ Here are all the options it supports.
 |                                 | continue indefinitely.                                        |
 |     --max-redirs `<N>`          | Max. redirects allowed (default: 10).                         |
 |     --max-retries `<N>`         | Max. retries for failed HTTP requests (default: 0).           |
+|     --sticky                    | Pin one upstream exit IP per session key (username). Off by default. |
+|     --sticky-ttl `<DUR>`        | Idle TTL for sticky pins (default: 10m).                      |
 | -m, --method `<METHOD>`         | Rotation method (sequent/random) (default: sequent).          |
 | -s, --sync                      | Sync will wait for the previous request to complete.          |
 | -v, --verbose                   | Dump HTTP request/responses or show died proxy on check.      |
