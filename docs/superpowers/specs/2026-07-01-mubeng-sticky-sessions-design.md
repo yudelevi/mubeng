@@ -2,7 +2,44 @@
 
 **Date:** 2026-07-01
 **Repo:** `~/dev/mubeng` (fork `github.com/yudelevi/mubeng`)
-**Status:** approved design, ready for implementation plan
+**Status:** ON HOLD — core assumption invalidated (see Blocker below); awaiting a
+direction decision before revision.
+
+## Blocker (found 2026-07-01, post-approval)
+
+The design below keys SOCKS sessions off an RFC1929 username. **Chromium does not
+support SOCKS5 proxy authentication** and never sends one. cloakbrowser (the
+br_scrape engine) is plain Playwright **Chromium** pointed at
+`socks5://127.0.0.1:3154`, so over that listener every browser context is an
+indistinguishable no-auth connection from `127.0.0.1` — there is no channel to
+carry a session id. The "SOCKS username = key" scheme cannot work for this stack.
+
+The only channel Chromium populates is **HTTP proxy auth**. Viable path:
+
+- Point cloakbrowser at the HTTP listener: `PROXY_URL=http://<session>:x@127.0.0.1:3153`
+  (per browser context; username = the per-domain session id).
+- mubeng runs `-no-mitm`, keys the pin off the CONNECT's `Proxy-Authorization`
+  username (already available in `connectDial`).
+- mubeng must issue a `407 Proxy-Authentication-Required` on an un-authed CONNECT
+  to elicit the username (Chromium only sends creds after a 407; Playwright
+  answers it). Small addition to `onConnect`.
+
+Consequences: the SOCKS work (RFC1929 in `negotiate()`, UDP-ASSOCIATE pinning)
+is **not needed** if cloakbrowser moves to `:3153` — sticky lives on the HTTP
+listener only. And because Chromium only reveals the username after a 407, the
+sticky HTTP port is effectively "strict" (auth-required), not fallback-rotate.
+
+Directions on the table (pending user decision):
+1. Move cloakbrowser to HTTP `:3153`, sticky-by-Proxy-Auth username, drop SOCKS
+   sticky. (Recommended — only path that works with Chromium today.)
+2. Keep SOCKS `:3154`, revisit a SOCKS5-auth-capable engine (Firefox/camoufox)
+   — blocked on the firefox resolution-quality work that routes FF→chromium now.
+
+The sections below reflect the pre-blocker (SOCKS-username) design and will be
+revised once a direction is chosen.
+
+---
+
 
 ## Problem
 
