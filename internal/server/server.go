@@ -11,6 +11,7 @@ import (
 	"github.com/mubeng/mubeng/common"
 	"github.com/mubeng/mubeng/internal/metrics"
 	"github.com/mubeng/mubeng/internal/proxygateway"
+	"github.com/mubeng/mubeng/internal/proxymanager"
 )
 
 // Run proxy server with a user defined listener.
@@ -88,6 +89,29 @@ func Run(opt *common.Options) {
 				log.Errorf("Metrics server error: %s", err)
 			}
 		}()
+	}
+
+	if opt.Sticky {
+		opt.HTTPSticky = proxymanager.NewSticky(opt.ProxyManager, opt.Method, opt.StickyTTL)
+		defer opt.HTTPSticky.Close()
+
+		if opt.SocksProxyManager != nil {
+			opt.SocksSticky = proxymanager.NewSticky(opt.SocksProxyManager, opt.SocksMethod, opt.StickyTTL)
+			defer opt.SocksSticky.Close()
+		}
+
+		if metricsEnabled {
+			opt.HTTPSticky.SetOnChange(func(n int) {
+				metrics.StickyPins.WithLabelValues("http").Set(float64(n))
+			})
+			if opt.SocksSticky != nil {
+				opt.SocksSticky.SetOnChange(func(n int) {
+					metrics.StickyPins.WithLabelValues("socks").Set(float64(n))
+				})
+			}
+		}
+
+		log.Infof("Sticky sessions enabled (TTL %s)", opt.StickyTTL)
 	}
 
 	log.Infof("%d proxies loaded", opt.ProxyManager.Count())
