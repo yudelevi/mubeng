@@ -20,7 +20,8 @@ type Sticky struct {
 	pins     map[string]*stickyPin
 	onChange func(n int)
 
-	stop chan struct{}
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
 type stickyPin struct {
@@ -56,6 +57,11 @@ func (s *Sticky) SetOnChange(fn func(n int)) {
 // Get returns the pinned upstream for key, rotating and pinning a fresh one on a
 // miss or an expired pin. An empty key bypasses pinning entirely, preserving the
 // rotate-every-connection default.
+//
+// The check-rotate-store sequence runs under a single held lock so that
+// concurrent callers racing on the same new key all observe one pin (a browser
+// opening parallel connections for a fresh session must not split across exit
+// IPs). Rotate is a cheap in-memory pick, so holding the lock across it is fine.
 func (s *Sticky) Get(key string) (string, error) {
 	if key == "" {
 		return s.mgr.Rotate(s.method)
@@ -70,14 +76,13 @@ func (s *Sticky) Get(key string) (string, error) {
 		s.mu.Unlock()
 		return upstream, nil
 	}
-	s.mu.Unlock()
 
 	upstream, err := s.mgr.Rotate(s.method)
 	if err != nil {
+		s.mu.Unlock()
 		return "", err
 	}
 
-	s.mu.Lock()
 	s.pins[key] = &stickyPin{upstream: upstream, expires: now.Add(s.ttl)}
 	n := len(s.pins)
 	cb := s.onChange
@@ -117,9 +122,9 @@ func (s *Sticky) Len() int {
 	return len(s.pins)
 }
 
-// Close stops the janitor.
+// Close stops the janitor. Safe to call more than once.
 func (s *Sticky) Close() {
-	close(s.stop)
+	s.closeOnce.Do(func() { close(s.stop) })
 }
 
 func (s *Sticky) janitor() {

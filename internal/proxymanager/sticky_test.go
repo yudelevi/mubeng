@@ -2,6 +2,7 @@ package proxymanager
 
 import (
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -85,6 +86,51 @@ func TestStickyExpiryReRotates(t *testing.T) {
 	if a == b {
 		t.Fatalf("expired pin was not re-rotated: %q==%q", a, b)
 	}
+}
+
+// Concurrent first use of one key (browser opening parallel connections for a
+// fresh session) must converge on a single pinned upstream.
+func TestStickyConcurrentSameKeyOnePin(t *testing.T) {
+	mgr := stickyManager(t, "http://a:1", "http://b:2", "http://c:3", "http://d:4")
+	s := NewSticky(mgr, "random", time.Minute)
+	defer s.Close()
+
+	const n = 64
+	var wg sync.WaitGroup
+	results := make([]string, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			got, err := s.Get("race")
+			if err != nil {
+				t.Errorf("Get: %s", err)
+				return
+			}
+			results[idx] = got
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	first := results[0]
+	for i, got := range results {
+		if got != first {
+			t.Fatalf("goroutine %d saw %q, want %q — session split across upstreams", i, got, first)
+		}
+	}
+	if s.Len() != 1 {
+		t.Fatalf("want exactly 1 pin, got %d", s.Len())
+	}
+}
+
+func TestStickyCloseIsIdempotent(t *testing.T) {
+	mgr := stickyManager(t, "http://a:1")
+	s := NewSticky(mgr, "sequent", time.Minute)
+	s.Close()
+	s.Close() // must not panic
 }
 
 func TestStickyDistinctKeysAndOnChange(t *testing.T) {

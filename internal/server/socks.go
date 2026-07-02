@@ -159,10 +159,12 @@ func (s *SocksServer) negotiate(conn net.Conn) (byte, string, string, error) {
 	// Prefer username/password (0x02) when offered so the username can serve as
 	// the sticky session key; otherwise fall back to no-auth (0x00). cloakbrowser's
 	// Chromium offers ONLY 0x02 when per-context credentials are set, and only
-	// 0x00 when they are not.
+	// 0x00 when they are not. 0x02 is accepted only when sticky is enabled, so a
+	// sticky-off listener rejects credential-only clients exactly as before.
+	stickyOn := s.opt != nil && s.opt.Sticky
 	selected := byte(socksMethodNoAccept)
 	switch {
-	case containsByte(methods, socksMethodUserPass):
+	case stickyOn && containsByte(methods, socksMethodUserPass):
 		selected = socksMethodUserPass
 	case containsByte(methods, socksMethodNoAuth):
 		selected = socksMethodNoAuth

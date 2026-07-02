@@ -55,6 +55,9 @@ func (s *SocksServer) handleUDPAssociate(clientCtrl net.Conn, key string) {
 
 	upstreamRelay, err := net.DialUDP("udp", nil, upstreamRelayAddr)
 	if err != nil {
+		if s.drop != nil {
+			s.drop(key)
+		}
 		log.Debugf("%s SOCKS5 UDP dial upstream relay %s: %s", clientCtrl.RemoteAddr(), upstreamRelayAddr, err)
 		_ = reply(clientCtrl, socksReplyGeneralErr)
 		return

@@ -51,7 +51,12 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 
 	resChan := make(chan requestResult)
 
-	sessionKey := proxyAuthUser(req)
+	// Only inspect Proxy-Authorization when sticky is enabled; with sticky off
+	// the request takes the original rotateProxy path with no extra parsing.
+	var sessionKey string
+	if p.Options.HTTPSticky != nil {
+		sessionKey = proxyAuthUser(req)
+	}
 
 	go func(r *http.Request) {
 		log.Debugf("%s %s %s", r.RemoteAddr, r.Method, r.URL)
@@ -64,6 +69,9 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 
 			retryablehttpClient, err := p.getClient(r, proxy)
 			if err != nil {
+				if p.Options.HTTPSticky != nil && sessionKey != "" {
+					p.Options.HTTPSticky.Drop(sessionKey)
+				}
 				result.err = err
 				result.retryCount = i
 				resChan <- result
@@ -85,15 +93,18 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 					metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeFailure).Inc()
 				}
 
+				// Drop the pin on any failed attempt — including the final one
+				// that returns below — so a dead upstream is never left pinned
+				// for the next request in this session.
+				if p.Options.HTTPSticky != nil && sessionKey != "" {
+					p.Options.HTTPSticky.Drop(sessionKey)
+				}
+
 				if i >= p.Options.MaxErrors && p.Options.MaxErrors >= 0 {
 					result.err = err
 					result.retryCount = i
 					resChan <- result
 					return
-				}
-
-				if p.Options.HTTPSticky != nil && sessionKey != "" {
-					p.Options.HTTPSticky.Drop(sessionKey)
 				}
 
 				if p.Options.RemoveOnErr {
@@ -223,7 +234,10 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 		attempts = 1
 	}
 
-	sessionKey := proxyAuthUser(req)
+	var sessionKey string
+	if p.Options.HTTPSticky != nil {
+		sessionKey = proxyAuthUser(req)
+	}
 
 	var lastErr error
 	for i := 0; i < attempts; i++ {
@@ -311,11 +325,13 @@ func proxyAuthUser(req *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	creds := string(dec)
-	if i := strings.IndexByte(creds, ':'); i >= 0 {
-		return creds[:i]
+	// Basic credentials are user:pass; reject malformed values with no colon so
+	// junk cannot become a high-cardinality session key.
+	user, _, ok := strings.Cut(string(dec), ":")
+	if !ok {
+		return ""
 	}
-	return creds
+	return user
 }
 
 // pickProxy selects the upstream for a request. With sticky enabled and a

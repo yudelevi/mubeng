@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mbndr/logo"
+	"github.com/mubeng/mubeng/common"
 	"h12.io/socks"
 )
 
@@ -123,6 +124,7 @@ func startRecordingSocksServer(t *testing.T) (string, <-chan string) {
 	keyCh := make(chan string, 1)
 	s := &SocksServer{
 		listener: ln,
+		opt:      &common.Options{Sticky: true},
 		dial: func(network, addr, key string) (net.Conn, error) {
 			select {
 			case keyCh <- key:
@@ -250,6 +252,51 @@ func TestSocksServerNoAuthEmptyKey(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("dial closure never called")
+	}
+}
+
+// Backward-compat: with sticky off, a client offering only user/pass (0x02) is
+// rejected exactly as the pre-feature server did (no acceptable method).
+func TestSocksServerUserPassRejectedWhenStickyOff(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	s := &SocksServer{
+		listener: ln,
+		opt:      &common.Options{Sticky: false},
+		dial: func(network, addr, key string) (net.Conn, error) {
+			return net.DialTimeout(network, addr, 5*time.Second)
+		},
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.handle(conn)
+		}
+	}()
+
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodUserPass}); err != nil {
+		t.Fatal(err)
+	}
+	sel := make([]byte, 2)
+	if _, err := io.ReadFull(conn, sel); err != nil {
+		t.Fatal(err)
+	}
+	if sel[1] != socksMethodNoAccept {
+		t.Fatalf("sticky-off method: want no-acceptable (%#x), got %#x", socksMethodNoAccept, sel[1])
 	}
 }
 

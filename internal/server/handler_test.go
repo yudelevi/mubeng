@@ -231,6 +231,13 @@ func TestProxyAuthUser(t *testing.T) {
 	if got := proxyAuthUser(bare); got != "" {
 		t.Fatalf("no-auth proxyAuthUser = %q, want empty", got)
 	}
+
+	// Malformed Basic value with no colon must not become a session key.
+	malformed, _ := http.NewRequest("GET", "http://x/", nil)
+	malformed.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("nocolon")))
+	if got := proxyAuthUser(malformed); got != "" {
+		t.Fatalf("malformed proxyAuthUser = %q, want empty", got)
+	}
 }
 
 func httpStickyProxy(t *testing.T, method string) (*Proxy, *proxymanager.Sticky) {

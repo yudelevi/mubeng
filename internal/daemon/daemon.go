@@ -5,8 +5,8 @@ import (
 	"strconv"
 
 	"github.com/kardianos/service"
-	"github.com/projectdiscovery/gologger"
 	"github.com/mubeng/mubeng/common"
+	"github.com/projectdiscovery/gologger"
 )
 
 // New to initialize mubeng in daemon
@@ -32,6 +32,14 @@ func New(opt *common.Options) error {
 
 	if opt.Watch {
 		args = append(args, "-w")
+	}
+
+	if opt.SocksAddress != "" {
+		args = append(args, "-S", opt.SocksAddress, "--socks-file", opt.SocksFile, "--socks-method", opt.SocksMethod)
+	}
+
+	if opt.Sticky {
+		args = append(args, "--sticky", "--sticky-ttl", opt.StickyTTL.String())
 	}
 
 	o := make(service.KeyValue)
