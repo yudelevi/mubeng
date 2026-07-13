@@ -156,11 +156,11 @@ func (s *SocksServer) negotiate(conn net.Conn) (byte, string, string, error) {
 		return 0, "", "", err
 	}
 
-	// Prefer username/password (0x02) when offered so the username can serve as
-	// the sticky session key; otherwise fall back to no-auth (0x00). cloakbrowser's
-	// Chromium offers ONLY 0x02 when per-context credentials are set, and only
-	// 0x00 when they are not. 0x02 is accepted only when sticky is enabled, so a
-	// sticky-off listener rejects credential-only clients exactly as before.
+	// Prefer username/password (0x02) when offered so the username can serve as the
+	// sticky session key (for clients that CAN authenticate); otherwise fall back to
+	// no-auth (0x00). Chromium can't send SOCKS5 credentials at all, so it always lands
+	// on 0x00 and is keyed on the CONNECT destination host below. 0x02 is accepted only
+	// when sticky is enabled, so a sticky-off listener rejects credential-only clients.
 	stickyOn := s.opt != nil && s.opt.Sticky
 	selected := byte(socksMethodNoAccept)
 	switch {
@@ -207,6 +207,16 @@ func (s *SocksServer) negotiate(conn net.Conn) (byte, string, string, error) {
 	portBuf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBuf); err != nil {
 		return 0, "", "", err
+	}
+
+	// A client that presents no username (Chromium can't send SOCKS5 credentials) still
+	// needs a stable exit IP per site to clear Cloudflare. When sticky is on, key the pin
+	// on the CONNECT destination host: every connection to a host — main document, XHRs,
+	// the challenge POST — then shares one upstream IP so cf_clearance stays valid, while
+	// distinct hosts fan out across the pool. UDP ASSOCIATE is excluded; its DST is the
+	// client's advertised address, not a site.
+	if sessionKey == "" && stickyOn && req[1] == socksCmdConnect {
+		sessionKey = host
 	}
 
 	return req[1], net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(portBuf)))), sessionKey, nil

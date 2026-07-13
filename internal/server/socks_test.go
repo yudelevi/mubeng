@@ -112,7 +112,7 @@ func TestSocksServerConnectRoundTrip(t *testing.T) {
 
 // startRecordingSocksServer runs a SocksServer whose dial closure records the
 // threaded session key, so tests can assert what negotiate() extracted.
-func startRecordingSocksServer(t *testing.T) (string, <-chan string) {
+func startRecordingSocksServer(t *testing.T, sticky bool) (string, <-chan string) {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -124,7 +124,7 @@ func startRecordingSocksServer(t *testing.T) (string, <-chan string) {
 	keyCh := make(chan string, 1)
 	s := &SocksServer{
 		listener: ln,
-		opt:      &common.Options{Sticky: true},
+		opt:      &common.Options{Sticky: sticky},
 		dial: func(network, addr, key string) (net.Conn, error) {
 			select {
 			case keyCh <- key:
@@ -169,7 +169,7 @@ func connectViaIPv4(t *testing.T, conn net.Conn, target net.Addr) {
 
 func TestSocksServerUserPassKeyThreaded(t *testing.T) {
 	echo := startEchoServer(t)
-	socksAddr, keyCh := startRecordingSocksServer(t)
+	socksAddr, keyCh := startRecordingSocksServer(t, true)
 
 	conn, err := net.DialTimeout("tcp", socksAddr, 5*time.Second)
 	if err != nil {
@@ -178,7 +178,7 @@ func TestSocksServerUserPassKeyThreaded(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	// greeting offering ONLY username/password (0x02) — what cloakbrowser sends
+	// greeting offering ONLY username/password (0x02) — what an authenticating client sends
 	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodUserPass}); err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +219,49 @@ func TestSocksServerUserPassKeyThreaded(t *testing.T) {
 	}
 }
 
-// Backward-compat: a no-auth (0x00) client — no session — threads an empty key,
-// so downstream selection stays on the rotate path exactly as before.
-func TestSocksServerNoAuthEmptyKey(t *testing.T) {
+// A no-auth (0x00) client — Chromium can't send SOCKS5 credentials — is keyed on the
+// CONNECT destination host when sticky is on, so every connection to a site shares one
+// pinned exit IP (cf_clearance survives) while distinct sites still fan out.
+func TestSocksServerNoAuthDestinationKey(t *testing.T) {
 	echo := startEchoServer(t)
-	socksAddr, keyCh := startRecordingSocksServer(t)
+	socksAddr, keyCh := startRecordingSocksServer(t, true)
+
+	conn, err := net.DialTimeout("tcp", socksAddr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write([]byte{socksVersion5, 0x01, socksMethodNoAuth}); err != nil {
+		t.Fatal(err)
+	}
+	sel := make([]byte, 2)
+	if _, err := io.ReadFull(conn, sel); err != nil {
+		t.Fatal(err)
+	}
+	if sel[1] != socksMethodNoAuth {
+		t.Fatalf("method: want 0x00, got %#x", sel[1])
+	}
+
+	connectViaIPv4(t, conn, echo.Addr())
+
+	wantHost, _, _ := net.SplitHostPort(echo.Addr().String())
+	select {
+	case got := <-keyCh:
+		if got != wantHost {
+			t.Fatalf("no-auth threaded key = %q, want destination host %q", got, wantHost)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dial closure never called")
+	}
+}
+
+// Backward-compat: with sticky OFF, a no-auth client threads an empty key, so the dial
+// path rotates every connection exactly as the pre-feature server did.
+func TestSocksServerNoAuthEmptyKeyStickyOff(t *testing.T) {
+	echo := startEchoServer(t)
+	socksAddr, keyCh := startRecordingSocksServer(t, false)
 
 	conn, err := net.DialTimeout("tcp", socksAddr, 5*time.Second)
 	if err != nil {
@@ -248,7 +286,7 @@ func TestSocksServerNoAuthEmptyKey(t *testing.T) {
 	select {
 	case got := <-keyCh:
 		if got != "" {
-			t.Fatalf("no-auth threaded key = %q, want empty", got)
+			t.Fatalf("sticky-off no-auth threaded key = %q, want empty", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("dial closure never called")
