@@ -34,7 +34,6 @@
 - [Sticky sessions](#sticky-sessions)
 - [HTTPS tunneling](#https-tunneling)
 - [Monitoring](#monitoring)
-- [Service deployment](#service-deployment)
 - [Usage](#usage)
   - [Basic](#basic)
   - [Options](#options)
@@ -70,7 +69,6 @@ is `master`. This fork retains the proxy checker and adds these server features:
 | Sticky sessions | `--sticky` pins an upstream by session username; SOCKS5 clients without credentials are keyed by destination host. |
 | Prometheus monitoring | `--metrics` exposes request outcomes, retries, errors, latency, active HTTP requests, pool sizes, and sticky pin counts. |
 | Pool reloads and failure handling | Concurrent pool access is synchronized. File replacement is watched, stale selections are invalidated after pool changes, and an exhausted pool fails requests without terminating the process. |
-| Deployment configs | [deploy/hosts](deploy/hosts) includes systemd units and pool configs for `pg-01` and `scrape-01` through `scrape-04`. |
 
 See the [branch comparison](https://github.com/kitabisa/mubeng/compare/master...yudelevi:master)
 for the full changes. The Go module path remains `github.com/mubeng/mubeng`.
@@ -236,24 +234,6 @@ In config mode, `mubeng_pool_size{pool="name"}` reports each named pool,
 `mubeng_proxy_pool_size` reports the total across listeners, and
 `mubeng_sticky_pins{pool="name"}` reports sticky pins. Request metrics cover
 HTTP requests; SOCKS5 traffic does not have equivalent request instrumentation.
-
-# Service deployment
-
-[deploy/hosts](deploy/hosts) contains per-host JSON configs and systemd units.
-The current layouts use HTTP `:3153`, SOCKS5 `:3154`, and metrics `:9090`, with
-upstreams from `/etc/default/proxies` and `/etc/default/proxies-socks5`.
-The units load `/etc/mubeng/pools.json` and validate it before starting.
-
-After editing a deployed config:
-
-```sh
-mubeng --config /etc/mubeng/pools.json --validate-config
-sudo systemctl restart mubeng
-```
-
-Install or update the unit alongside the config if its flags change, and run
-`sudo systemctl daemon-reload` before restarting. Config mode uses an external
-service manager; the legacy `--daemon` flag cannot be combined with `--config`.
 
 # Usage
 
