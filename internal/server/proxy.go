@@ -13,10 +13,14 @@ import (
 
 // Proxy as ServeMux in proxy server handler.
 type Proxy struct {
-	HTTPProxy *goproxy.ProxyHttpServer
-	Options   *common.Options
-	Gateways  map[string]*proxygateway.ProxyGateway
-	mu        sync.RWMutex
+	HTTPProxy      *goproxy.ProxyHttpServer
+	Options        *common.Options
+	Gateways       map[string]*proxygateway.ProxyGateway
+	mu             sync.RWMutex
+	rotationMu     sync.Mutex
+	rotationCount  int
+	currentProxy   string
+	poolGeneration uint64
 }
 
 func (p *Proxy) Close() {

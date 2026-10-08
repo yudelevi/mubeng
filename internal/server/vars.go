@@ -18,7 +18,6 @@ var (
 	dump           *httpretty.Logger
 	mime           = "text/plain"
 	log            *logo.Logger
-	ok             = 1
 
 	mutex = sync.Mutex{}
 )

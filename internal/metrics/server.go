@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"net"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -33,4 +34,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) Address() string {
 	return s.httpServer.Addr
+}
+
+// Serve starts metrics on a listener bound during startup validation.
+func (s *Server) Serve(listener net.Listener) error {
+	return s.httpServer.Serve(listener)
 }

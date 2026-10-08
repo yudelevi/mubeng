@@ -127,6 +127,7 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 						r.RemoteAddr, r.Method, r.URL, remaining,
 					)
 
+					p.invalidateProxy(proxy)
 					i++
 					continue
 				} else {
@@ -259,6 +260,7 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 		if !p.Options.RotateOnErr {
 			break
 		}
+		p.invalidateProxy(proxyAddr)
 		if p.Options.MaxErrors >= 0 && i+1 >= p.Options.MaxErrors {
 			break
 		}
@@ -271,6 +273,9 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 }
 
 func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) {
+	if proxyAddr == "" {
+		return nil, errors.New("proxy pool has no available upstream")
+	}
 	u, err := url.Parse(proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("parse proxy %q: %w", proxyAddr, err)
@@ -341,7 +346,8 @@ func (p *Proxy) pickProxy(key string) string {
 	if p.Options.HTTPSticky != nil && key != "" {
 		proxy, err := p.Options.HTTPSticky.Get(key)
 		if err != nil {
-			log.Fatalf("Could not pin proxy IP: %s", err)
+			log.Errorf("Could not pin proxy IP: %s", err)
+			return ""
 		}
 		return proxy
 	}
@@ -349,23 +355,29 @@ func (p *Proxy) pickProxy(key string) string {
 }
 
 func (p *Proxy) rotateProxy() string {
-	var proxy string
-	var err error
-
-	if ok >= p.Options.Rotate {
-		proxy, err = p.Options.ProxyManager.Rotate(p.Options.Method)
+	p.rotationMu.Lock()
+	defer p.rotationMu.Unlock()
+	generation := p.Options.ProxyManager.Generation()
+	if p.currentProxy == "" || p.rotationCount >= p.Options.Rotate || p.poolGeneration != generation {
+		proxy, err := p.Options.ProxyManager.Rotate(p.Options.Method)
 		if err != nil {
-			log.Fatalf("Could not rotate proxy IP: %s", err)
+			log.Errorf("Could not rotate proxy IP: %s", err)
+			return ""
 		}
-
-		if ok >= p.Options.Rotate {
-			ok = 1
-		}
-	} else {
-		ok++
+		p.currentProxy = proxy
+		p.poolGeneration = generation
+		p.rotationCount = 0
 	}
+	p.rotationCount++
+	return p.currentProxy
+}
 
-	return proxy
+func (p *Proxy) invalidateProxy(proxy string) {
+	p.rotationMu.Lock()
+	defer p.rotationMu.Unlock()
+	if p.currentProxy == proxy {
+		p.currentProxy = ""
+	}
 }
 
 func (p *Proxy) removeProxy(target string) {
@@ -377,7 +389,11 @@ func (p *Proxy) removeProxy(target string) {
 
 	if metricsEnabled {
 		metrics.ProxyRemovalsTotal.WithLabelValues(target).Inc()
-		metrics.ProxyPoolSize.Set(float64(p.Options.ProxyManager.Count()))
+		if p.Options.OnPoolChange != nil {
+			p.Options.OnPoolChange()
+		} else {
+			metrics.ProxyPoolSize.Set(float64(p.Options.ProxyManager.Count()))
+		}
 	}
 }
 

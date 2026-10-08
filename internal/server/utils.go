@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -46,10 +47,10 @@ func watch(w *fsnotify.Watcher) {
 	for {
 		select {
 		case event := <-w.Events:
-			if event.Op == 2 {
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
 				opt := handler.Options
 
-				if opt.SocksProxyManager != nil && event.Name == opt.SocksFile {
+				if opt.SocksProxyManager != nil && filepath.Clean(event.Name) == filepath.Clean(opt.SocksFile) {
 					log.Info("SOCKS5 proxy file has changed, reloading...")
 
 					if err := opt.SocksProxyManager.Reload(); err != nil {
@@ -59,6 +60,9 @@ func watch(w *fsnotify.Watcher) {
 					continue
 				}
 
+				if filepath.Clean(event.Name) != filepath.Clean(opt.File) {
+					continue
+				}
 				log.Info("Proxy file has changed, reloading...")
 
 				if err := opt.ProxyManager.Reload(); err != nil {

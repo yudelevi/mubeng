@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/elazarl/goproxy"
 	"github.com/henvic/httpretty"
@@ -65,7 +66,7 @@ func Run(opt *common.Options) {
 		defer watcher.Close()
 
 		if opt.SocksProxyManager != nil {
-			if err := watcher.Add(opt.SocksFile); err != nil {
+			if err := watcher.Add(filepath.Dir(opt.SocksFile)); err != nil {
 				log.Fatal(err)
 			}
 		}

@@ -9,6 +9,11 @@ import (
 
 // Options consists of the configuration required.
 type Options struct {
+	Config            string
+	ValidateConfig    bool
+	PoolName          string
+	OnPoolChange      func()
+	Pools             []*Options
 	ProxyManager      *proxymanager.ProxyManager
 	SocksProxyManager *proxymanager.ProxyManager
 	Result            *os.File

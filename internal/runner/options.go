@@ -12,6 +12,8 @@ import (
 // Options defines the values needed to execute the Runner.
 func Options() *common.Options {
 	opt := &common.Options{}
+	flag.StringVar(&opt.Config, "config", "", "JSON pool configuration")
+	flag.BoolVar(&opt.ValidateConfig, "validate-config", false, "Validate pool configuration and exit")
 
 	flag.StringVar(&opt.File, "f", "", "")
 	flag.StringVar(&opt.File, "file", "", "")

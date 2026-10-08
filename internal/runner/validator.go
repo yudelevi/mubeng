@@ -15,6 +15,12 @@ import (
 // validate user-supplied option values before Runner.
 func validate(opt *common.Options) error {
 	var err error
+	if opt.ValidateConfig && opt.Config == "" {
+		return errors.New("--validate-config requires --config")
+	}
+	if opt.Config != "" {
+		return loadPools(opt)
+	}
 
 	if hasStdin() {
 		tmp, err := os.CreateTemp("", "mubeng-stdin-*")

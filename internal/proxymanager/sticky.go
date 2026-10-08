@@ -25,8 +25,9 @@ type Sticky struct {
 }
 
 type stickyPin struct {
-	upstream string
-	expires  time.Time
+	upstream   string
+	generation uint64
+	expires    time.Time
 }
 
 // NewSticky starts a store with a background janitor sweeping idle pins.
@@ -70,20 +71,21 @@ func (s *Sticky) Get(key string) (string, error) {
 	now := time.Now()
 
 	s.mu.Lock()
-	if pin, ok := s.pins[key]; ok && now.Before(pin.expires) {
+	if pin, ok := s.pins[key]; ok && now.Before(pin.expires) && pin.generation == s.mgr.Generation() {
 		pin.expires = now.Add(s.ttl)
 		upstream := pin.upstream
 		s.mu.Unlock()
 		return upstream, nil
 	}
 
+	generation := s.mgr.Generation()
 	upstream, err := s.mgr.Rotate(s.method)
 	if err != nil {
 		s.mu.Unlock()
 		return "", err
 	}
 
-	s.pins[key] = &stickyPin{upstream: upstream, expires: now.Add(s.ttl)}
+	s.pins[key] = &stickyPin{upstream: upstream, expires: now.Add(s.ttl), generation: generation}
 	n := len(s.pins)
 	cb := s.onChange
 	s.mu.Unlock()

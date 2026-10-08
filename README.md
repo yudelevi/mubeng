@@ -108,6 +108,38 @@ Manual building executable from source code:
 ▶ (sudo) install ./bin/mubeng /usr/local/bin
 ```
 
+# Multiple proxy pools
+
+Run any number of independent HTTP and SOCKS5 listeners with a JSON config:
+
+```sh
+mubeng --config examples/pools.json --no-mitm --sticky
+```
+
+See [examples/pools.json](examples/pools.json) for three listeners: datacenter
+HTTP on port 8080, residential HTTP on port 8081, and residential SOCKS5 on
+port 1080. Create `examples/datacenter.txt` and `examples/residential.txt` with
+the upstream proxy URLs belonging to each tier (one URL per line, using the
+existing proxy-file format). Choose a port to choose its tier; requests rotate
+only within that listener's file. There is no automatic fallback between tiers.
+
+Each pool requires a unique `name`, `type` (`http` or `socks5`), `address`
+(`host:port`), and `file`. File paths are relative to the config file. An optional
+`method` (`sequent` or `random`) overrides the global `--method`. Listener type
+is the protocol clients use to connect; upstream URLs in its file may use any
+supported proxy protocol. Two listeners can use the same file while keeping
+separate rotation counters and sticky session pins.
+
+Global timeout, retry, rotation, sticky, logging, and watch flags apply to all
+pools. `--watch` reloads each pool's proxy file; changes to the config itself
+require a restart. `--auth` applies to HTTP listeners and is rejected for a
+config containing SOCKS5 listeners. Config mode cannot be combined with
+`--check`, `--daemon`, or the legacy listener/file flags. The
+existing single-pool CLI remains available. `--metrics` exposes an aggregate
+`mubeng_proxy_pool_size` and `mubeng_pool_size{pool="name"}` for each pool;
+sticky pin gauges use the configured pool names. All configured ports must bind
+successfully before traffic is served.
+
 # Usage
 
 For usage, it's always required to provide your proxy list, whether it is used to check or as a proxy pool for your proxy IP rotation.

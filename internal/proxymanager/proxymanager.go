@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mubeng/mubeng/pkg/helper"
@@ -14,6 +15,8 @@ import (
 
 // ProxyManager defines the proxy list and current proxy position
 type ProxyManager struct {
+	mu           sync.Mutex
+	generation   uint64
 	CurrentIndex int
 	filepath     string
 	Length       int

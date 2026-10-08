@@ -2,7 +2,9 @@ package proxymanager
 
 import (
 	"os"
+	"sync"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, lines string) string {
@@ -74,5 +76,55 @@ func TestReloadPicksUpFileChanges(t *testing.T) {
 	}
 	if pm.Count() != 2 {
 		t.Fatalf("after reload: want 2 proxies on the same instance, got %d", pm.Count())
+	}
+}
+
+func TestConcurrentReloadAndRotation(t *testing.T) {
+	file := writeTemp(t, "http://127.0.0.1:8080\nhttp://127.0.0.1:8081\n")
+	pm, err := New(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 100; n++ {
+				if _, err := pm.Rotate("sequent"); err != nil {
+					t.Error(err)
+				}
+				pm.Count()
+			}
+		}()
+	}
+	for n := 0; n < 100; n++ {
+		if err := pm.Reload(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+}
+
+func TestStickyInvalidatesRemovedProxy(t *testing.T) {
+	pm, err := New(writeTemp(t, "http://127.0.0.1:8080\nhttp://127.0.0.1:8081\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sticky := NewSticky(pm, "sequent", time.Minute)
+	defer sticky.Close()
+	first, err := sticky.Get("session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pm.RemoveProxy(first); err != nil {
+		t.Fatal(err)
+	}
+	next, err := sticky.Get("session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == next {
+		t.Fatal("removed upstream remains pinned")
 	}
 }

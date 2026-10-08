@@ -79,6 +79,10 @@ func (s *SocksServer) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
+	return s.serve(ln)
+}
+
+func (s *SocksServer) serve(ln net.Listener) error {
 	s.listener = ln
 
 	for {
@@ -351,6 +355,9 @@ func (p *Proxy) dialViaSocksPool(network, addr, key string) (net.Conn, error) {
 		if p.Options.RemoveOnErr {
 			if rmErr := p.Options.SocksProxyManager.RemoveProxy(proxyAddr); rmErr != nil {
 				log.Debug(rmErr)
+			}
+			if p.Options.OnPoolChange != nil {
+				p.Options.OnPoolChange()
 			}
 		}
 		if !p.Options.RotateOnErr {

@@ -29,6 +29,8 @@ const (
 )
 
 var (
+	PoolSize = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "pool_size", Help: "Current number of proxies per named pool"}, []string{LabelPool})
+
 	RequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,

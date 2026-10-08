@@ -20,6 +20,8 @@ var (
   mubeng [-c|-a :8080] -f file.txt [options...]
 
 Options:
+        --config <FILE>             JSON configuration for multiple proxy pools
+        --validate-config           Validate configuration and exit
   GENERAL
     -f, --file <FILE>                Proxy file (required)
     -o, --output <FILE>              Write log output to FILE

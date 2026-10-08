@@ -11,7 +11,12 @@ import (
 
 // New to switch an action, whether to check or run a proxy server.
 func New(opt *common.Options) error {
-	if opt.Address != "" {
+	if opt.ValidateConfig {
+		return nil
+	}
+	if len(opt.Pools) > 0 {
+		return server.RunPools(opt)
+	} else if opt.Address != "" {
 		if opt.Daemon {
 			return daemon.New(opt)
 		}
