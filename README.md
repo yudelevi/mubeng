@@ -8,27 +8,33 @@
 <p align="center">
 	<a href="https://golang.org"><img src="https://img.shields.io/badge/made%20with-Go-brightgreen"></a>
 	<a href="https://goreportcard.com/report/github.com/mubeng/mubeng"><img src="https://goreportcard.com/badge/github.com/mubeng/mubeng"></a>
-	<a href="https://github.com/mubeng/mubeng/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellowgreen"></a>
+	<a href="https://github.com/yudelevi/mubeng/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellowgreen"></a>
 	<a href="#"><img src="https://img.shields.io/badge/platform-osx%2Flinux%2Fwindows-green"></a>
-	<a href="https://github.com/mubeng/mubeng/releases"><img src="https://img.shields.io/github/release/mubeng/mubeng"></a>
-	<a href="https://github.com/mubeng/mubeng/issues"><img src="https://img.shields.io/github/issues/mubeng/mubeng"></a>
+	<a href="https://github.com/yudelevi/mubeng/releases"><img src="https://img.shields.io/github/release/yudelevi/mubeng"></a>
+	<a href="https://github.com/yudelevi/mubeng/issues"><img src="https://img.shields.io/github/issues/yudelevi/mubeng"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/mubeng/mubeng/blob/master/.github/CONTRIBUTING.md">Contributing</a> •
-  <a href="https://github.com/mubeng/mubeng/blob/master/CHANGELOG.md">What's new</a> •
+  <a href="https://github.com/yudelevi/mubeng/blob/master/.github/CONTRIBUTING.md">Contributing</a> •
+  <a href="https://github.com/yudelevi/mubeng/blob/master/CHANGELOG.md">What's new</a> •
   <a href="https://pkg.go.dev/github.com/mubeng/mubeng/pkg/mubeng">Documentation</a> •
-  <a href="https://github.com/mubeng/mubeng/issues/new/choose">Report Issues</a>
+  <a href="https://github.com/yudelevi/mubeng/issues/new/choose">Report Issues</a>
 </p>
 
 ---
 
+- [Changes from upstream](#changes-from-upstream)
 - [Features](#features)
 - [Why mubeng?](#why-mubeng)
 - [Installation](#installation)
+  - [Source](#source)
   - [Binary](#binary)
   - [Docker](#docker)
-  - [Source](#source)
+- [Multiple proxy pools](#multiple-proxy-pools)
+- [Sticky sessions](#sticky-sessions)
+- [HTTPS tunneling](#https-tunneling)
+- [Monitoring](#monitoring)
+- [Service deployment](#service-deployment)
 - [Usage](#usage)
   - [Basic](#basic)
   - [Options](#options)
@@ -43,13 +49,31 @@
     	- [Templating](#templating)
     	- [Amazon API Gateway](#amazon-api-gateway)
 - [Limitations](#limitations)
-	- [Known Bugs](#known-bugs)
 - [Contributors](#contributors)
 - [Pronunciation](#pronunciation)
 - [Changes](#changes)
 - [License](#license)
 
 ---
+
+# Changes from upstream
+
+This is [yudelevi/mubeng](https://github.com/yudelevi/mubeng), a fork of
+[kitabisa/mubeng](https://github.com/kitabisa/mubeng). Upstream's default branch
+is `master`. This fork retains the proxy checker and adds these server features:
+
+| Addition | Behavior in this fork |
+|---|---|
+| Multiple proxy pools | `--config` starts named HTTP and SOCKS5 listeners on separate ports, each with its own proxy file, rotation state, and sticky sessions. |
+| SOCKS5 entry point | `--socks` / `--socks-file` adds a separate pool alongside the legacy HTTP listener. SOCKS5 CONNECT and UDP ASSOCIATE are supported. |
+| End-to-end HTTPS | `--no-mitm` tunnels CONNECT through an upstream proxy while preserving the client's TLS handshake. |
+| Sticky sessions | `--sticky` pins an upstream by session username; SOCKS5 clients without credentials are keyed by destination host. |
+| Prometheus monitoring | `--metrics` exposes request outcomes, retries, errors, latency, active HTTP requests, pool sizes, and sticky pin counts. |
+| Pool reloads and failure handling | Concurrent pool access is synchronized. File replacement is watched, stale selections are invalidated after pool changes, and an exhausted pool fails requests without terminating the process. |
+| Deployment configs | [deploy/hosts](deploy/hosts) includes systemd units and pool configs for `pg-01` and `scrape-01` through `scrape-04`. |
+
+See the [branch comparison](https://github.com/kitabisa/mubeng/compare/master...yudelevi:master)
+for the full changes. The Go module path remains `github.com/mubeng/mubeng`.
 
 # Features
 
@@ -63,7 +87,7 @@
 
 # Why mubeng?
 
-It's fairly simple, there is no need for additional configuration.
+Use CLI flags for a single HTTP listener, or a JSON config for multiple pools.
 
 `mubeng` has 2 core functionality:
 
@@ -77,40 +101,66 @@ So, you don't need any extra proxy checking tools out there if you want to check
 
 # Installation
 
+## Source
+
+Build this fork with Go 1.23 or newer:
+
+```sh
+git clone https://github.com/yudelevi/mubeng.git
+cd mubeng
+make build
+sudo install ./bin/mubeng /usr/local/bin/mubeng
+```
+
+`master` is the merged branch; `development` is used for new changes.
+
 ## Binary
 
-Simply, download a pre-built binary from [releases page](https://github.com/mubeng/mubeng/releases) and run!
+Check the [fork's releases](https://github.com/yudelevi/mubeng/releases) for
+published binaries. Building from source includes the current fork features.
+Upstream binaries and `go install github.com/mubeng/mubeng@latest` install the
+upstream version.
+
+The built-in `--update` command still targets upstream releases. Rebuild this
+fork to update it while retaining the features listed above.
 
 ## Docker
 
-Pull the [Docker](https://docs.docker.com/get-docker/) image by running:
+Build an image from this checkout:
 
-```bash
-▶ docker pull ghcr.io/mubeng/mubeng:latest
+```sh
+docker build -t mubeng-fork .
+docker run --rm -p 8080:8080 -v "$PWD/examples:/config:ro" \
+  mubeng-fork --config /config/pools.json --no-mitm
 ```
 
-## Source
-
-Using [Go](https://golang.org/doc/install) compiler:
-
-```bash
-▶ go install -v github.com/mubeng/mubeng@latest
-```
-
-### — or
-
-Manual building executable from source code:
-
-```bash
-▶ git clone https://github.com/mubeng/mubeng
-▶ cd mubeng
-▶ make build
-▶ (sudo) install ./bin/mubeng /usr/local/bin
-```
+Create the proxy files referenced by the config before starting the container.
+For Docker, use listener addresses such as `:8080` in the config so published
+ports are reachable, and publish each configured listener port with `-p`.
+The upstream image `ghcr.io/mubeng/mubeng:latest` contains the upstream version.
 
 # Multiple proxy pools
 
-Run any number of independent HTTP and SOCKS5 listeners with a JSON config:
+Run independent HTTP and SOCKS5 listeners with a JSON config. Each proxy file
+contains the IP subset belonging to that tier:
+
+```json
+{
+  "pools": [
+    {"name": "datacenter", "type": "http", "address": "127.0.0.1:8080", "file": "datacenter.txt", "method": "random"},
+    {"name": "residential", "type": "socks5", "address": "127.0.0.1:1080", "file": "residential.txt", "method": "sequent"}
+  ]
+}
+```
+
+Save this as `pools.json` beside its proxy files, then validate and run it:
+
+```sh
+mubeng --config pools.json --validate-config
+mubeng --config pools.json --no-mitm --sticky
+```
+
+For a three-listener example:
 
 ```sh
 mubeng --config examples/pools.json --no-mitm --sticky
@@ -127,10 +177,10 @@ Each pool requires a unique `name`, `type` (`http` or `socks5`), `address`
 (`host:port`), and `file`. File paths are relative to the config file. An optional
 `method` (`sequent` or `random`) overrides the global `--method`. Listener type
 is the protocol clients use to connect; upstream URLs in its file may use any
-supported proxy protocol. Two listeners can use the same file while keeping
-separate rotation counters and sticky session pins.
+supported HTTP/S or SOCKS upstream protocol. Two listeners can use the same
+file while keeping separate rotation counters and sticky session pins.
 
-Global timeout, retry, rotation, sticky, logging, and watch flags apply to all
+Global timeout, retry, sticky, logging, and watch flags apply to all
 pools. `--watch` reloads each pool's proxy file; changes to the config itself
 require a restart. `--auth` applies to HTTP listeners and is rejected for a
 config containing SOCKS5 listeners. Config mode cannot be combined with
@@ -140,9 +190,74 @@ existing single-pool CLI remains available. `--metrics` exposes an aggregate
 sticky pin gauges use the configured pool names. All configured ports must bind
 successfully before traffic is served.
 
+To add a tier, create its proxy file, add a pool with a unique name and unused
+port, run `--validate-config`, and restart mubeng. Editing the JSON config
+requires a restart even when `--watch` is enabled.
+
+# Sticky sessions
+
+With `--sticky`, a session reuses one selected upstream until its idle TTL
+expires (default: 10 minutes). `--sticky-ttl 3m` changes that idle timeout.
+Each listener has its own pins, even when listeners use the same proxy file.
+
+| Client | Session key |
+|---|---|
+| HTTP proxy with Basic `Proxy-Authorization` | Username; requests without a username use normal rotation. |
+| SOCKS5 with username/password | Username. |
+| SOCKS5 CONNECT without credentials | Destination host; connections to the same host share a pin. |
+| SOCKS5 UDP ASSOCIATE without credentials | No session key; uses normal rotation. |
+
+For example, repeat a username to reuse a session:
+
+```sh
+curl --proxy http://127.0.0.1:8080 --proxy-user session-1:anything https://example.com/
+curl --proxy socks5h://127.0.0.1:1080 --proxy-user session-1:anything https://example.com/
+```
+
+These credentials are routing tags; the password is not validated in sticky
+mode. `--sticky` cannot be combined with `--auth`. A failed connection drops
+its session pin, and pool reloads or removals invalidate stale selections.
+Pinning keeps the same upstream URL; whether that URL keeps the same public
+exit IP depends on the upstream provider.
+
+# HTTPS tunneling
+
+Use `--no-mitm` to pass HTTPS CONNECT traffic through the selected upstream
+without terminating client TLS. This preserves the client's TLS handshake and
+requires no mubeng CA installation. HTTP listeners otherwise use the existing
+MITM behavior; SOCKS5 CONNECT tunnels the client's bytes directly.
+
+# Monitoring
+
+Enable Prometheus metrics with `--metrics 127.0.0.1:9090`, then scrape
+`http://127.0.0.1:9090/metrics`.
+
+In config mode, `mubeng_pool_size{pool="name"}` reports each named pool,
+`mubeng_proxy_pool_size` reports the total across listeners, and
+`mubeng_sticky_pins{pool="name"}` reports sticky pins. Request metrics cover
+HTTP requests; SOCKS5 traffic does not have equivalent request instrumentation.
+
+# Service deployment
+
+[deploy/hosts](deploy/hosts) contains per-host JSON configs and systemd units.
+The current layouts use HTTP `:3153`, SOCKS5 `:3154`, and metrics `:9090`, with
+upstreams from `/etc/default/proxies` and `/etc/default/proxies-socks5`.
+The units load `/etc/mubeng/pools.json` and validate it before starting.
+
+After editing a deployed config:
+
+```sh
+mubeng --config /etc/mubeng/pools.json --validate-config
+sudo systemctl restart mubeng
+```
+
+Install or update the unit alongside the config if its flags change, and run
+`sudo systemctl daemon-reload` before restarting. Config mode uses an external
+service manager; the legacy `--daemon` flag cannot be combined with `--config`.
+
 # Usage
 
-For usage, it's always required to provide your proxy list, whether it is used to check or as a proxy pool for your proxy IP rotation.
+Provide `--config` for multiple listeners, or `--file` for the legacy server and proxy-checker modes.
 
 <center>
   <a href="#"><img alt="kitabisa mubeng" src="https://github.com/user-attachments/assets/3c19e328-cfd7-43f7-bf83-b3996671fc67" width="80%"></a>
@@ -151,7 +266,8 @@ For usage, it's always required to provide your proxy list, whether it is used t
 ## Basic
 
 ```bash
-▶ mubeng [-c|-a :8080] -f file.txt [options...]
+mubeng --config pools.json [options...]
+mubeng [-c|-a :8080] -f file.txt [options...]
 ```
 
 ## Options
@@ -164,6 +280,10 @@ Here are all the options it supports.
 
 | **Flag**                      	| **Description**                                              	|
 |-------------------------------  |-------------------------------------------------------------- |
+|     --config `<FILE>`          | JSON configuration for named proxy pools.                     |
+|     --validate-config           | Validate `--config` and its proxy files, then exit.            |
+|     --no-mitm                   | Tunnel HTTPS CONNECT without terminating client TLS.          |
+| -M, --metrics `<ADDR>:<PORT>`   | Serve Prometheus metrics at `/metrics`.                       |
 | -f, --file `<FILE>`             | Proxy file.                                                   |
 | -a, --address `<ADDR>:<PORT>`   | Run proxy server.                                             |
 | -S, --socks `<ADDR>:<PORT>`     | Run a SOCKS5 listener alongside the HTTP server.              |
@@ -184,7 +304,7 @@ Here are all the options it supports.
 |                                 | continue indefinitely.                                        |
 |     --max-redirs `<N>`          | Max. redirects allowed (default: 10).                         |
 |     --max-retries `<N>`         | Max. retries for failed HTTP requests (default: 0).           |
-|     --sticky                    | Pin one upstream exit IP per session key (username). Off by default. |
+|     --sticky                    | Pin an upstream by username, or destination host for unauthenticated SOCKS5 CONNECT. Off by default. |
 |     --sticky-ttl `<DUR>`        | Idle TTL for sticky pins (default: 10m).                      |
 | -m, --method `<METHOD>`         | Rotation method (sequent/random) (default: sequent).          |
 | -s, --sync                      | Sync will wait for the previous request to complete.          |
@@ -193,6 +313,8 @@ Here are all the options it supports.
 | -u, --update                    | Update mubeng to the latest stable version.                   |
 | -w, --watch                     | Watch proxy file, live-reload from changes.                   |
 | -V, --version                   | Show current mubeng version.                                  |
+
+<a id="notes"></a>
 
 <table>
 	<td>
@@ -236,6 +358,8 @@ Here are all the options it supports.
 </table>
 
 ## Install SSL Certificate
+
+Skip this step when using `--no-mitm` or a SOCKS5 listener.
 
 mubeng uses built-in certificate authority by [GoProxy](https://github.com/elazarl/goproxy). With mubeng proxy server running, the generated certificate can be exported by visiting `http://mubeng/cert` in a browser.
 
@@ -448,15 +572,25 @@ This setup enables mubeng to automatically rotate traffic through multiple AWS r
 
 # Limitations
 
-The `-a` (`--address`) IP rotator listens as an HTTP(S) proxy only. Clients that require a SOCKS5 entry point can use the `-S` (`--socks`) listener, which serves SOCKS5 (CONNECT) and rotates its own pool from `--socks-file`. Both listeners can run at once. Upstream proxies of any supported scheme (HTTP/S, SOCKSv4(A)/v5) work with either listener via the client-side auto-switch transport.
+The `--address` listener accepts HTTP proxy requests. Use `--socks` alongside
+it, or configure a `socks5` pool with `--config`, for SOCKS5 clients.
+
+SOCKS5 supports CONNECT and UDP ASSOCIATE; BIND is rejected. UDP ASSOCIATE
+requires a `socks5://` upstream that supports UDP. CONNECT supports HTTP/S and
+SOCKS v4(A)/v5 upstreams. AWS API Gateway entries are supported by the HTTP
+request path, not by SOCKS5 or CONNECT tunneling.
+
+`--rotate` controls the HTTP request rotation interval. SOCKS5 selects an
+upstream per connection or UDP association unless a sticky pin applies.
+Pools do not fall back to another tier when their upstreams fail.
 
 # Contributors
 
-[![contributions](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/mubeng/mubeng/issues)
+[![contributions](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/yudelevi/mubeng/issues)
 
-This project exists thanks to all the people who contribute. To learn how to setup a development environment and for contribution guidelines, see [CONTRIBUTING.md](https://github.com/mubeng/mubeng/blob/master/.github/CONTRIBUTING.md).
+This project exists thanks to all the people who contribute. To learn how to setup a development environment and for contribution guidelines, see [CONTRIBUTING.md](https://github.com/yudelevi/mubeng/blob/master/.github/CONTRIBUTING.md).
 
-<a href="https://github.com/mubeng/mubeng/graphs/contributors">
+<a href="https://github.com/yudelevi/mubeng/graphs/contributors">
 	<img src=".github/CONTRIBUTORS.svg">
 </a>
 
@@ -466,8 +600,8 @@ This project exists thanks to all the people who contribute. To learn how to set
 
 # Changes
 
-For changes, see [CHANGELOG.md](https://github.com/mubeng/mubeng/blob/master/CHANGELOG.md).
+For fork additions, see [Changes from upstream](#changes-from-upstream). For release history, see [CHANGELOG.md](CHANGELOG.md).
 
 # License
 
-This program is free software: you can redistribute it and/or modify it under the terms of the [Apache license](https://github.com/mubeng/mubeng/blob/master/LICENSE). mubeng and any contributions are copyright © by Dwi Siswanto 2021-2025.
+This program is free software: you can redistribute it and/or modify it under the terms of the [Apache license](https://github.com/yudelevi/mubeng/blob/master/LICENSE). mubeng and any contributions are copyright © by Dwi Siswanto 2021-2025.
