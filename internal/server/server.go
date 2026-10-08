@@ -4,12 +4,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/elazarl/goproxy"
 	"github.com/henvic/httpretty"
 	"github.com/mbndr/logo"
 	"github.com/mubeng/mubeng/common"
+	"github.com/mubeng/mubeng/internal/metrics"
 	"github.com/mubeng/mubeng/internal/proxygateway"
+	"github.com/mubeng/mubeng/internal/proxymanager"
 )
 
 // Run proxy server with a user defined listener.
@@ -45,6 +48,7 @@ func Run(opt *common.Options) {
 	handler.HTTPProxy.OnRequest().HandleConnectFunc(handler.onConnect)
 	handler.HTTPProxy.OnResponse().DoFunc(handler.onResponse)
 	handler.HTTPProxy.NonproxyHandler = http.HandlerFunc(nonProxy)
+	handler.HTTPProxy.ConnectDialWithReq = handler.connectDial
 	handler.Gateways = make(map[string]*proxygateway.ProxyGateway)
 
 	server = &http.Server{
@@ -61,6 +65,12 @@ func Run(opt *common.Options) {
 		}
 		defer watcher.Close()
 
+		if opt.SocksProxyManager != nil {
+			if err := watcher.Add(filepath.Dir(opt.SocksFile)); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		go watch(watcher)
 	}
 
@@ -68,7 +78,57 @@ func Run(opt *common.Options) {
 	signal.Notify(stop, os.Interrupt)
 	go interrupt(stop)
 
+	if opt.Metrics != "" {
+		metricsEnabled = true
+		metricsServer = metrics.NewServer(opt.Metrics)
+
+		metrics.ProxyPoolSize.Set(float64(opt.ProxyManager.Count()))
+
+		go func() {
+			log.Infof("Starting metrics server on %s", opt.Metrics)
+			if err := metricsServer.Start(); err != nil && err != http.ErrServerClosed {
+				log.Errorf("Metrics server error: %s", err)
+			}
+		}()
+	}
+
+	if opt.Sticky {
+		opt.HTTPSticky = proxymanager.NewSticky(opt.ProxyManager, opt.Method, opt.StickyTTL)
+		defer opt.HTTPSticky.Close()
+
+		if opt.SocksProxyManager != nil {
+			opt.SocksSticky = proxymanager.NewSticky(opt.SocksProxyManager, opt.SocksMethod, opt.StickyTTL)
+			defer opt.SocksSticky.Close()
+		}
+
+		if metricsEnabled {
+			opt.HTTPSticky.SetOnChange(func(n int) {
+				metrics.StickyPins.WithLabelValues("http").Set(float64(n))
+			})
+			if opt.SocksSticky != nil {
+				opt.SocksSticky.SetOnChange(func(n int) {
+					metrics.StickyPins.WithLabelValues("socks").Set(float64(n))
+				})
+			}
+		}
+
+		log.Infof("Sticky sessions enabled (TTL %s)", opt.StickyTTL)
+	}
+
 	log.Infof("%d proxies loaded", opt.ProxyManager.Count())
+
+	if opt.SocksAddress != "" {
+		socksServer = NewSocksServer(opt, handler)
+
+		log.Infof("%d SOCKS5 proxies loaded", opt.SocksProxyManager.Count())
+		log.Infof("[PID: %d] Starting SOCKS5 proxy server on %s", os.Getpid(), opt.SocksAddress)
+
+		go func() {
+			if err := socksServer.ListenAndServe(); err != nil {
+				log.Fatalf("SOCKS5 server error: %s", err)
+			}
+		}()
+	}
 
 	log.Infof("[PID: %d] Starting proxy server on %s", os.Getpid(), opt.Address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

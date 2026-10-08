@@ -15,6 +15,12 @@ import (
 // validate user-supplied option values before Runner.
 func validate(opt *common.Options) error {
 	var err error
+	if opt.ValidateConfig && opt.Config == "" {
+		return errors.New("--validate-config requires --config")
+	}
+	if opt.Config != "" {
+		return loadPools(opt)
+	}
 
 	if hasStdin() {
 		tmp, err := os.CreateTemp("", "mubeng-stdin-*")
@@ -37,6 +43,10 @@ func validate(opt *common.Options) error {
 		defer os.Remove(opt.File)
 	}
 
+	if opt.Sticky && opt.Auth != "" {
+		return errors.New("-sticky cannot be combined with -A/--auth (the username is the session key)")
+	}
+
 	if opt.File == "" {
 		return errors.New("no proxy file provided")
 	}
@@ -54,6 +64,26 @@ func validate(opt *common.Options) error {
 	validMethod := map[string]bool{
 		"sequent": true,
 		"random":  true,
+	}
+
+	if opt.SocksAddress != "" {
+		if opt.SocksFile == "" {
+			return errors.New("no SOCKS5 proxy file provided (-socks-file) for the SOCKS5 listener")
+		}
+
+		opt.SocksFile, err = filepath.Abs(opt.SocksFile)
+		if err != nil {
+			return err
+		}
+
+		if !validMethod[opt.SocksMethod] {
+			return fmt.Errorf("unknown method for %q", opt.SocksMethod)
+		}
+
+		opt.SocksProxyManager, err = proxymanager.New(opt.SocksFile)
+		if err != nil {
+			return err
+		}
 	}
 
 	if opt.Address != "" && !opt.Check {

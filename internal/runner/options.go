@@ -12,12 +12,21 @@ import (
 // Options defines the values needed to execute the Runner.
 func Options() *common.Options {
 	opt := &common.Options{}
+	flag.StringVar(&opt.Config, "config", "", "JSON pool configuration")
+	flag.BoolVar(&opt.ValidateConfig, "validate-config", false, "Validate pool configuration and exit")
 
 	flag.StringVar(&opt.File, "f", "", "")
 	flag.StringVar(&opt.File, "file", "", "")
 
 	flag.StringVar(&opt.Address, "a", "", "")
 	flag.StringVar(&opt.Address, "address", "", "")
+
+	flag.StringVar(&opt.SocksAddress, "S", "", "")
+	flag.StringVar(&opt.SocksAddress, "socks", "", "")
+
+	flag.StringVar(&opt.SocksFile, "socks-file", "", "")
+
+	flag.StringVar(&opt.SocksMethod, "socks-method", "sequent", "")
 
 	flag.StringVar(&opt.Auth, "A", "", "")
 	flag.StringVar(&opt.Auth, "auth", "", "")
@@ -62,12 +71,20 @@ func Options() *common.Options {
 	flag.BoolVar(&opt.Watch, "w", false, "")
 	flag.BoolVar(&opt.Watch, "watch", false, "")
 
+	flag.StringVar(&opt.Metrics, "M", "", "")
+	flag.StringVar(&opt.Metrics, "metrics", "", "")
+
 	flag.IntVar(&opt.Goroutine, "g", 50, "")
 	flag.IntVar(&opt.Goroutine, "goroutine", 50, "")
 
 	flag.IntVar(&opt.MaxErrors, "max-errors", 3, "")
 	flag.IntVar(&opt.MaxRedirects, "max-redirs", 10, "")
 	flag.IntVar(&opt.MaxRetries, "max-retries", 0, "")
+
+	flag.BoolVar(&opt.NoMITM, "no-mitm", false, "")
+
+	flag.BoolVar(&opt.Sticky, "sticky", false, "")
+	flag.DurationVar(&opt.StickyTTL, "sticky-ttl", 10*time.Minute, "")
 
 	flag.Usage = func() {
 		showBanner()

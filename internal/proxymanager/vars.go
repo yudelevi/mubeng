@@ -2,7 +2,4 @@ package proxymanager
 
 import "regexp"
 
-var (
-	manager     *ProxyManager
-	placeholder = regexp.MustCompile(`\{\{.*?\}\}`)
-)
+var placeholder = regexp.MustCompile(`\{\{.*?\}\}`)

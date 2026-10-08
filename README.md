@@ -108,6 +108,38 @@ Manual building executable from source code:
 ▶ (sudo) install ./bin/mubeng /usr/local/bin
 ```
 
+# Multiple proxy pools
+
+Run any number of independent HTTP and SOCKS5 listeners with a JSON config:
+
+```sh
+mubeng --config examples/pools.json --no-mitm --sticky
+```
+
+See [examples/pools.json](examples/pools.json) for three listeners: datacenter
+HTTP on port 8080, residential HTTP on port 8081, and residential SOCKS5 on
+port 1080. Create `examples/datacenter.txt` and `examples/residential.txt` with
+the upstream proxy URLs belonging to each tier (one URL per line, using the
+existing proxy-file format). Choose a port to choose its tier; requests rotate
+only within that listener's file. There is no automatic fallback between tiers.
+
+Each pool requires a unique `name`, `type` (`http` or `socks5`), `address`
+(`host:port`), and `file`. File paths are relative to the config file. An optional
+`method` (`sequent` or `random`) overrides the global `--method`. Listener type
+is the protocol clients use to connect; upstream URLs in its file may use any
+supported proxy protocol. Two listeners can use the same file while keeping
+separate rotation counters and sticky session pins.
+
+Global timeout, retry, rotation, sticky, logging, and watch flags apply to all
+pools. `--watch` reloads each pool's proxy file; changes to the config itself
+require a restart. `--auth` applies to HTTP listeners and is rejected for a
+config containing SOCKS5 listeners. Config mode cannot be combined with
+`--check`, `--daemon`, or the legacy listener/file flags. The
+existing single-pool CLI remains available. `--metrics` exposes an aggregate
+`mubeng_proxy_pool_size` and `mubeng_pool_size{pool="name"}` for each pool;
+sticky pin gauges use the configured pool names. All configured ports must bind
+successfully before traffic is served.
+
 # Usage
 
 For usage, it's always required to provide your proxy list, whether it is used to check or as a proxy pool for your proxy IP rotation.
@@ -134,6 +166,9 @@ Here are all the options it supports.
 |-------------------------------  |-------------------------------------------------------------- |
 | -f, --file `<FILE>`             | Proxy file.                                                   |
 | -a, --address `<ADDR>:<PORT>`   | Run proxy server.                                             |
+| -S, --socks `<ADDR>:<PORT>`     | Run a SOCKS5 listener alongside the HTTP server.              |
+|     --socks-file `<FILE>`       | Proxy file for the SOCKS5 listener (required with `-S`).      |
+|     --socks-method `<METHOD>`   | Rotation method for the SOCKS5 listener (default: sequent).   |
 | -A, --auth `<USER>:<PASS>`      | Set authorization for proxy server.                           |
 | -d, --daemon                    | Daemonize proxy server.                                       |
 | -c, --check                     | To perform proxy live check.                                  |
@@ -149,6 +184,8 @@ Here are all the options it supports.
 |                                 | continue indefinitely.                                        |
 |     --max-redirs `<N>`          | Max. redirects allowed (default: 10).                         |
 |     --max-retries `<N>`         | Max. retries for failed HTTP requests (default: 0).           |
+|     --sticky                    | Pin one upstream exit IP per session key (username). Off by default. |
+|     --sticky-ttl `<DUR>`        | Idle TTL for sticky pins (default: 10m).                      |
 | -m, --method `<METHOD>`         | Rotation method (sequent/random) (default: sequent).          |
 | -s, --sync                      | Sync will wait for the previous request to complete.          |
 | -v, --verbose                   | Dump HTTP request/responses or show died proxy on check.      |
@@ -411,7 +448,7 @@ This setup enables mubeng to automatically rotate traffic through multiple AWS r
 
 # Limitations
 
-Currently IP rotation runs the proxy server only as an HTTP protocol, not a SOCKSv4(A)/v5 protocol, even though the resource you have is SOCKSv4(A)/v5. In other words, the SOCKSv4(A)/v5 resource that you provide is used properly because it uses auto-switch transport on the client, but this proxy server **DOES NOT** switch to anything other than HTTP protocol.
+The `-a` (`--address`) IP rotator listens as an HTTP(S) proxy only. Clients that require a SOCKS5 entry point can use the `-S` (`--socks`) listener, which serves SOCKS5 (CONNECT) and rotates its own pool from `--socks-file`. Both listeners can run at once. Upstream proxies of any supported scheme (HTTP/S, SOCKSv4(A)/v5) work with either listener via the client-side auto-switch transport.
 
 # Contributors
 

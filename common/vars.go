@@ -20,6 +20,8 @@ var (
   mubeng [-c|-a :8080] -f file.txt [options...]
 
 Options:
+        --config <FILE>             JSON configuration for multiple proxy pools
+        --validate-config           Validate configuration and exit
   GENERAL
     -f, --file <FILE>                Proxy file (required)
     -o, --output <FILE>              Write log output to FILE
@@ -41,6 +43,12 @@ Options:
 
   IP ROTATOR
     -a, --address <ADDR>:<PORT>      Run proxy server
+    -S, --socks <ADDR>:<PORT>        Run a SOCKS5 listener alongside the HTTP
+                                     server, rotating its own pool (--socks-file)
+        --socks-file <FILE>          Proxy file for the SOCKS5 listener
+                                     (required with -S; separate pool from -f)
+        --socks-method <METHOD>      Rotation method for the SOCKS5 listener
+                                     (sequent/random) (default: sequent)
     -A, --auth <USER>:<PASS>         Set authorization for proxy server
     -d, --daemon                     Daemonize proxy server
     -m, --method <METHOD>            Rotation method (sequent/random) (default: sequent)
@@ -52,13 +60,23 @@ Options:
                                      If value is less than 0 (e.g., -1), rotation will
                                      continue indefinitely
         --max-redirs <N>             Max. redirects allowed (default: 10)
+        --no-mitm                    Tunnel HTTPS via rotated upstream proxy instead of
+                                     terminating TLS. Preserves the client TLS handshake
+                                     end-to-end (e.g. for JA3 fingerprint preservation).
+        --sticky                     Pin one upstream exit IP per session key (SOCKS
+                                     RFC1929 / HTTP Proxy-Authorization username).
+                                     Default off. Cannot be combined with -A.
+        --sticky-ttl <DUR>           Idle TTL for sticky pins (default: 10m)
     -s, --sync                       Syncrounus mode
     -w, --watch                      Watch proxy file, live-reload from changes
+    -M, --metrics <ADDR>:<PORT>      Prometheus metrics server address (e.g., :9090)
 
 Examples:
   mubeng -f proxies.txt --check --output live.txt
   mubeng -f proxies.txt --check --output-format "{{proxy}} | {{country}} | {{duration}}"
   mubeng -a localhost:8080 -f live.txt -r 10 -w
+  mubeng -a localhost:8080 -f live.txt --metrics :9090
+  mubeng -a localhost:8080 -f http.txt -S localhost:1080 --socks-file socks5.txt
 
 `
 )

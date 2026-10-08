@@ -3,6 +3,7 @@ package proxymanager
 import (
 	"fmt"
 	"math/rand"
+	"path/filepath"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/mubeng/mubeng/common/errors"
@@ -11,6 +12,8 @@ import (
 
 // Count counts total proxies
 func (p *ProxyManager) Count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.Length = len(p.Proxies)
 
 	return p.Length
@@ -18,9 +21,12 @@ func (p *ProxyManager) Count() int {
 
 // NextProxy will navigate the next proxy to use
 func (p *ProxyManager) NextProxy() (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var proxy string
 
-	count := p.Count()
+	count := len(p.Proxies)
+	p.Length = count
 	if count <= 0 {
 		return proxy, errors.ErrNoProxyLeft
 	}
@@ -37,9 +43,12 @@ func (p *ProxyManager) NextProxy() (string, error) {
 
 // RandomProxy will choose a proxy randomly from the list
 func (p *ProxyManager) RandomProxy() (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var proxy string
 
-	count := p.Count()
+	count := len(p.Proxies)
+	p.Length = count
 	if count <= 0 {
 		return proxy, errors.ErrNoProxyLeft
 	}
@@ -51,9 +60,13 @@ func (p *ProxyManager) RandomProxy() (string, error) {
 
 // RemoveProxy removes target proxy from proxy pool
 func (p *ProxyManager) RemoveProxy(target string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for i, v := range p.Proxies {
 		if v == target {
 			p.Proxies = append(p.Proxies[:i], p.Proxies[i+1:]...)
+			p.Length = len(p.Proxies)
+			p.generation++
 
 			return nil
 		}
@@ -90,8 +103,9 @@ func (p *ProxyManager) Watch() (*fsnotify.Watcher, error) {
 		return watcher, err
 	}
 
-	if err := watcher.Add(p.filepath); err != nil {
-		return watcher, err
+	if err := watcher.Add(filepath.Dir(p.filepath)); err != nil {
+		_ = watcher.Close()
+		return nil, err
 	}
 
 	return watcher, nil
@@ -99,13 +113,24 @@ func (p *ProxyManager) Watch() (*fsnotify.Watcher, error) {
 
 // Reload proxy pool
 func (p *ProxyManager) Reload() error {
-	i := p.CurrentIndex
-
-	p, err := New(p.filepath)
+	fresh, err := New(p.filepath)
 	if err != nil {
 		return err
 	}
-	p.CurrentIndex = i
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Proxies = fresh.Proxies
+	p.Length = len(p.Proxies)
+	p.CurrentIndex = -1
+	p.generation++
 
 	return nil
+}
+
+// Generation changes when the upstream list is replaced or a proxy is removed.
+func (p *ProxyManager) Generation() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.generation
 }

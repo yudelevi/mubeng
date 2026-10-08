@@ -1,0 +1,24 @@
+{
+  "pools": [
+    {
+      "name": "datacenter-http",
+      "type": "http",
+      "address": "127.0.0.1:8080",
+      "file": "datacenter.txt",
+      "method": "sequent"
+    },
+    {
+      "name": "residential-http",
+      "type": "http",
+      "address": "127.0.0.1:8081",
+      "file": "residential.txt",
+      "method": "random"
+    },
+    {
+      "name": "residential-socks",
+      "type": "socks5",
+      "address": "127.0.0.1:1080",
+      "file": "residential.txt"
+    }
+  ]
+}

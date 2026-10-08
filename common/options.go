@@ -9,11 +9,20 @@ import (
 
 // Options consists of the configuration required.
 type Options struct {
-	ProxyManager *proxymanager.ProxyManager
-	Result       *os.File
-	Timeout      time.Duration
+	Config            string
+	ValidateConfig    bool
+	PoolName          string
+	OnPoolChange      func()
+	Pools             []*Options
+	ProxyManager      *proxymanager.ProxyManager
+	SocksProxyManager *proxymanager.ProxyManager
+	Result            *os.File
+	Timeout           time.Duration
 
 	Address      string
+	SocksAddress string
+	SocksFile    string
+	SocksMethod  string
 	Auth         string
 	CC           string
 	Check        bool
@@ -22,6 +31,7 @@ type Options struct {
 	File         string
 	Goroutine    int
 	Method       string
+	Metrics      string
 	Output       string
 	OutputFormat string
 	Rotate       int
@@ -33,4 +43,10 @@ type Options struct {
 	MaxErrors    int
 	MaxRedirects int
 	MaxRetries   int
+	NoMITM       bool
+	Sticky       bool
+	StickyTTL    time.Duration
+
+	HTTPSticky  *proxymanager.Sticky
+	SocksSticky *proxymanager.Sticky
 }

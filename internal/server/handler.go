@@ -7,17 +7,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/elazarl/goproxy"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/mubeng/mubeng/common"
+	"github.com/mubeng/mubeng/internal/metrics"
 	"github.com/mubeng/mubeng/internal/proxygateway"
 	"github.com/mubeng/mubeng/pkg/helper/awsurl"
 	"github.com/mubeng/mubeng/pkg/mubeng"
+	"h12.io/socks"
 )
+
+type requestResult struct {
+	response   *http.Response
+	err        error
+	proxy      string
+	retryCount int
+	startTime  time.Time
+}
 
 // onRequest handles client request
 func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
@@ -30,34 +44,66 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 		return req, serverErr(req)
 	}
 
-	resChan := make(chan interface{})
+	if metricsEnabled {
+		metrics.ActiveConnections.Inc()
+		defer metrics.ActiveConnections.Dec()
+	}
+
+	resChan := make(chan requestResult)
+
+	// Only inspect Proxy-Authorization when sticky is enabled; with sticky off
+	// the request takes the original rotateProxy path with no extra parsing.
+	var sessionKey string
+	if p.Options.HTTPSticky != nil {
+		sessionKey = proxyAuthUser(req)
+	}
 
 	go func(r *http.Request) {
 		log.Debugf("%s %s %s", r.RemoteAddr, r.Method, r.URL)
 
+		result := requestResult{startTime: time.Now()}
 		i := 0
 		for {
-			proxy := p.rotateProxy()
+			proxy := p.pickProxy(sessionKey)
+			result.proxy = proxy
 
 			retryablehttpClient, err := p.getClient(r, proxy)
 			if err != nil {
-				resChan <- err
-
+				if p.Options.HTTPSticky != nil && sessionKey != "" {
+					p.Options.HTTPSticky.Drop(sessionKey)
+				}
+				result.err = err
+				result.retryCount = i
+				resChan <- result
 				return
 			}
 
 			retryablehttpRequest, err := retryablehttp.FromRequest(r)
 			if err != nil {
-				resChan <- err
-
+				result.err = err
+				result.retryCount = i
+				resChan <- result
 				return
 			}
 
 			resp, err := retryablehttpClient.Do(retryablehttpRequest)
 			if err != nil {
-				if i >= p.Options.MaxErrors && p.Options.MaxErrors >= 0 {
-					resChan <- err
+				if metricsEnabled {
+					metrics.RetriesTotal.WithLabelValues(proxy).Inc()
+					metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeFailure).Inc()
+				}
 
+				// Drop the pin on any failed attempt — including the final one
+				// that returns below — so a dead upstream is never left pinned
+				// for the next request in this session.
+				if p.Options.HTTPSticky != nil && sessionKey != "" {
+					p.Options.HTTPSticky.Drop(sessionKey)
+				}
+
+				if i >= p.Options.MaxErrors && p.Options.MaxErrors >= 0 {
+					result.err = err
+					result.retryCount = i
+					resChan <- result
 					return
 				}
 
@@ -81,12 +127,13 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 						r.RemoteAddr, r.Method, r.URL, remaining,
 					)
 
+					p.invalidateProxy(proxy)
 					i++
-
 					continue
 				} else {
-					resChan <- err
-
+					result.err = err
+					result.retryCount = i
+					resChan <- result
 					return
 				}
 			}
@@ -94,29 +141,57 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 
 			buf, err := io.ReadAll(resp.Body)
 			if err != nil {
-				resChan <- err
-
+				result.err = err
+				result.retryCount = i
+				resChan <- result
 				return
 			}
 			resp.Body = io.NopCloser(bytes.NewBuffer(buf))
 
-			resChan <- resp
+			if metricsEnabled {
+				metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeSuccess).Inc()
+			}
 
+			result.response = resp
+			result.retryCount = i
+			resChan <- result
 			return
 		}
 	}(req)
 
 	var resp *http.Response
 
-	res := <-resChan
-	switch res := res.(type) {
-	case *http.Response:
-		resp = res
+	result := <-resChan
+	duration := time.Since(result.startTime).Seconds()
+
+	if result.response != nil {
+		resp = result.response
 		log.Debug(req.RemoteAddr, " ", resp.Status)
-	case error:
-		err := res
-		log.Errorf("%s %s", req.RemoteAddr, err)
+
+		if metricsEnabled {
+			statusCode := strconv.Itoa(resp.StatusCode)
+			retried := "false"
+			if result.retryCount > 0 {
+				retried = "true"
+			}
+			metrics.RequestsTotal.WithLabelValues(req.Method, statusCode, result.proxy, retried).Inc()
+			metrics.RequestDuration.WithLabelValues(req.Method, result.proxy).Observe(duration)
+			metrics.ProxyRequestsTotal.WithLabelValues(result.proxy, "success").Inc()
+		}
+	} else if result.err != nil {
+		log.Errorf("%s %s", req.RemoteAddr, result.err)
 		resp = serverErr(req)
+
+		if metricsEnabled {
+			retried := "false"
+			if result.retryCount > 0 {
+				retried = "true"
+			}
+			errorType := metrics.ClassifyError(result.err)
+			metrics.RequestErrorsTotal.WithLabelValues(errorType, result.proxy).Inc()
+			metrics.RequestsTotal.WithLabelValues(req.Method, "502", result.proxy, retried).Inc()
+			metrics.ProxyRequestsTotal.WithLabelValues(result.proxy, "error").Inc()
+		}
 	}
 
 	return req, resp
@@ -148,7 +223,86 @@ func (p *Proxy) onConnect(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectA
 		}
 	}
 
+	if p.Options.NoMITM {
+		return goproxy.OkConnect, host
+	}
 	return goproxy.MitmConnect, host
+}
+
+func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, error) {
+	attempts := p.Options.MaxRetries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var sessionKey string
+	if p.Options.HTTPSticky != nil {
+		sessionKey = proxyAuthUser(req)
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		proxyAddr := p.pickProxy(sessionKey)
+		conn, err := p.dialUpstream(proxyAddr, network, addr)
+		if err == nil {
+			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, proxyAddr)
+			return conn, nil
+		}
+		lastErr = err
+		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, proxyAddr, err)
+
+		if p.Options.HTTPSticky != nil && sessionKey != "" {
+			p.Options.HTTPSticky.Drop(sessionKey)
+		}
+		if p.Options.RemoveOnErr {
+			p.removeProxy(proxyAddr)
+		}
+		if !p.Options.RotateOnErr {
+			break
+		}
+		p.invalidateProxy(proxyAddr)
+		if p.Options.MaxErrors >= 0 && i+1 >= p.Options.MaxErrors {
+			break
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("connect to %s failed: exhausted upstream attempts", addr)
+	}
+	return nil, lastErr
+}
+
+func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) {
+	if proxyAddr == "" {
+		return nil, errors.New("proxy pool has no available upstream")
+	}
+	u, err := url.Parse(proxyAddr)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy %q: %w", proxyAddr, err)
+	}
+
+	switch u.Scheme {
+	case "http", "https", "":
+		var authHandler func(req *http.Request)
+		if u.User != nil {
+			user := u.User.Username()
+			pass, _ := u.User.Password()
+			cred := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+			authHandler = func(connectReq *http.Request) {
+				connectReq.Header.Set("Proxy-Authorization", "Basic "+cred)
+			}
+		}
+		dial := p.HTTPProxy.NewConnectDialToProxyWithHandler(proxyAddr, authHandler)
+		if dial == nil {
+			return nil, fmt.Errorf("unsupported proxy URL: %s", proxyAddr)
+		}
+		return dial(network, addr)
+	case "socks4", "socks4a", "socks5":
+		// nolint: staticcheck
+		return socks.Dial(proxyAddr)(network, addr)
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme %q", u.Scheme)
+	}
 }
 
 // onResponse handles backend responses, and removing hop-by-hop headers
@@ -160,30 +314,86 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 	return resp
 }
 
-func (p *Proxy) rotateProxy() string {
-	var proxy string
-	var err error
-
-	if ok >= p.Options.Rotate {
-		proxy, err = p.Options.ProxyManager.Rotate(p.Options.Method)
-		if err != nil {
-			log.Fatalf("Could not rotate proxy IP: %s", err)
-		}
-
-		if ok >= p.Options.Rotate {
-			ok = 1
-		}
-	} else {
-		ok++
+// proxyAuthUser extracts the username from a Basic Proxy-Authorization header,
+// which serves as the HTTP sticky session key. Returns "" when the header is
+// absent or malformed, so no-session requests take the plain rotate path.
+func proxyAuthUser(req *http.Request) string {
+	auth := req.Header.Get("Proxy-Authorization")
+	if auth == "" {
+		return ""
 	}
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Basic") {
+		return ""
+	}
+	dec, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	// Basic credentials are user:pass; reject malformed values with no colon so
+	// junk cannot become a high-cardinality session key.
+	user, _, ok := strings.Cut(string(dec), ":")
+	if !ok {
+		return ""
+	}
+	return user
+}
 
-	return proxy
+// pickProxy selects the upstream for a request. With sticky enabled and a
+// non-empty key it returns the session-pinned upstream; otherwise it falls back
+// to the counter-based rotateProxy path unchanged.
+func (p *Proxy) pickProxy(key string) string {
+	if p.Options.HTTPSticky != nil && key != "" {
+		proxy, err := p.Options.HTTPSticky.Get(key)
+		if err != nil {
+			log.Errorf("Could not pin proxy IP: %s", err)
+			return ""
+		}
+		return proxy
+	}
+	return p.rotateProxy()
+}
+
+func (p *Proxy) rotateProxy() string {
+	p.rotationMu.Lock()
+	defer p.rotationMu.Unlock()
+	generation := p.Options.ProxyManager.Generation()
+	if p.currentProxy == "" || p.rotationCount >= p.Options.Rotate || p.poolGeneration != generation {
+		proxy, err := p.Options.ProxyManager.Rotate(p.Options.Method)
+		if err != nil {
+			log.Errorf("Could not rotate proxy IP: %s", err)
+			return ""
+		}
+		p.currentProxy = proxy
+		p.poolGeneration = generation
+		p.rotationCount = 0
+	}
+	p.rotationCount++
+	return p.currentProxy
+}
+
+func (p *Proxy) invalidateProxy(proxy string) {
+	p.rotationMu.Lock()
+	defer p.rotationMu.Unlock()
+	if p.currentProxy == proxy {
+		p.currentProxy = ""
+	}
 }
 
 func (p *Proxy) removeProxy(target string) {
 	err := p.Options.ProxyManager.RemoveProxy(target)
 	if err != nil {
 		log.Error(err)
+		return
+	}
+
+	if metricsEnabled {
+		metrics.ProxyRemovalsTotal.WithLabelValues(target).Inc()
+		if p.Options.OnPoolChange != nil {
+			p.Options.OnPoolChange()
+		} else {
+			metrics.ProxyPoolSize.Set(float64(p.Options.ProxyManager.Count()))
+		}
 	}
 }
 

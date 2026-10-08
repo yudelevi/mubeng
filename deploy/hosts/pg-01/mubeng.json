@@ -1,0 +1,18 @@
+{
+  "pools": [
+    {
+      "name": "http",
+      "type": "http",
+      "address": ":3153",
+      "file": "/etc/default/proxies",
+      "method": "random"
+    },
+    {
+      "name": "socks",
+      "type": "socks5",
+      "address": ":3154",
+      "file": "/etc/default/proxies-socks5",
+      "method": "sequent"
+    }
+  ]
+}

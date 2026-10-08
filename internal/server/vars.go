@@ -6,15 +6,18 @@ import (
 
 	"github.com/henvic/httpretty"
 	"github.com/mbndr/logo"
+	"github.com/mubeng/mubeng/internal/metrics"
 )
 
 var (
-	handler *Proxy
-	server  *http.Server
-	dump    *httpretty.Logger
-	mime    = "text/plain"
-	log     *logo.Logger
-	ok      = 1
+	handler        *Proxy
+	server         *http.Server
+	socksServer    *SocksServer
+	metricsServer  *metrics.Server
+	metricsEnabled bool
+	dump           *httpretty.Logger
+	mime           = "text/plain"
+	log            *logo.Logger
 
 	mutex = sync.Mutex{}
 )
