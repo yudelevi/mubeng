@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mubeng/mubeng/common"
+	"github.com/mubeng/mubeng/pkg/helper"
 )
 
 const (
@@ -343,11 +344,11 @@ func (p *Proxy) dialViaSocksPool(network, addr, key string) (net.Conn, error) {
 
 		conn, err := p.dialUpstream(proxyAddr, network, addr)
 		if err == nil {
-			log.Debugf("SOCKS5 CONNECT %s via %s", addr, proxyAddr)
+			log.Debugf("SOCKS5 CONNECT %s via %s", addr, helper.RedactProxy(proxyAddr))
 			return conn, nil
 		}
 		lastErr = err
-		log.Debugf("SOCKS5 CONNECT %s via %s failed: %s", addr, proxyAddr, err)
+		log.Debugf("SOCKS5 CONNECT %s via %s failed: %s", addr, helper.RedactProxy(proxyAddr), err)
 
 		if sticky {
 			p.Options.SocksSticky.Drop(key)

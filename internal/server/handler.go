@@ -20,6 +20,7 @@ import (
 	"github.com/mubeng/mubeng/common"
 	"github.com/mubeng/mubeng/internal/metrics"
 	"github.com/mubeng/mubeng/internal/proxygateway"
+	"github.com/mubeng/mubeng/pkg/helper"
 	"github.com/mubeng/mubeng/pkg/helper/awsurl"
 	"github.com/mubeng/mubeng/pkg/mubeng"
 	"h12.io/socks"
@@ -65,7 +66,7 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 		i := 0
 		for {
 			proxy := p.pickProxy(sessionKey)
-			result.proxy = proxy
+			result.proxy = helper.RedactProxy(proxy)
 
 			retryablehttpClient, err := p.getClient(r, proxy)
 			if err != nil {
@@ -89,8 +90,8 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 			resp, err := retryablehttpClient.Do(retryablehttpRequest)
 			if err != nil {
 				if metricsEnabled {
-					metrics.RetriesTotal.WithLabelValues(proxy).Inc()
-					metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeFailure).Inc()
+					metrics.RetriesTotal.WithLabelValues(result.proxy).Inc()
+					metrics.ProxyAttemptsTotal.WithLabelValues(result.proxy, metrics.OutcomeFailure).Inc()
 				}
 
 				// Drop the pin on any failed attempt — including the final one
@@ -149,7 +150,7 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 			resp.Body = io.NopCloser(bytes.NewBuffer(buf))
 
 			if metricsEnabled {
-				metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeSuccess).Inc()
+				metrics.ProxyAttemptsTotal.WithLabelValues(result.proxy, metrics.OutcomeSuccess).Inc()
 			}
 
 			result.response = resp
@@ -245,11 +246,11 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 		proxyAddr := p.pickProxy(sessionKey)
 		conn, err := p.dialUpstream(proxyAddr, network, addr)
 		if err == nil {
-			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, proxyAddr)
+			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, helper.RedactProxy(proxyAddr))
 			return conn, nil
 		}
 		lastErr = err
-		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, proxyAddr, err)
+		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, helper.RedactProxy(proxyAddr), err)
 
 		if p.Options.HTTPSticky != nil && sessionKey != "" {
 			p.Options.HTTPSticky.Drop(sessionKey)
@@ -278,7 +279,7 @@ func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) 
 	}
 	u, err := url.Parse(proxyAddr)
 	if err != nil {
-		return nil, fmt.Errorf("parse proxy %q: %w", proxyAddr, err)
+		return nil, fmt.Errorf("parse proxy %s: %w", helper.RedactProxy(proxyAddr), errors.Unwrap(err))
 	}
 
 	switch u.Scheme {
@@ -294,7 +295,7 @@ func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) 
 		}
 		dial := p.HTTPProxy.NewConnectDialToProxyWithHandler(proxyAddr, authHandler)
 		if dial == nil {
-			return nil, fmt.Errorf("unsupported proxy URL: %s", proxyAddr)
+			return nil, fmt.Errorf("unsupported proxy URL: %s", helper.RedactProxy(proxyAddr))
 		}
 		return dial(network, addr)
 	case "socks4", "socks4a", "socks5":
@@ -388,7 +389,7 @@ func (p *Proxy) removeProxy(target string) {
 	}
 
 	if metricsEnabled {
-		metrics.ProxyRemovalsTotal.WithLabelValues(target).Inc()
+		metrics.ProxyRemovalsTotal.WithLabelValues(helper.RedactProxy(target)).Inc()
 		if p.Options.OnPoolChange != nil {
 			p.Options.OnPoolChange()
 		} else {

@@ -2,12 +2,15 @@ package server
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/mubeng/mubeng/pkg/helper"
 )
 
 const (
@@ -148,7 +151,7 @@ func (s *SocksServer) dialUpstreamUDPAssociate(key string) (net.Conn, *net.UDPAd
 
 	u, err := url.Parse(proxyAddr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse proxy %q: %w", proxyAddr, err)
+		return nil, nil, fmt.Errorf("parse proxy %s: %w", helper.RedactProxy(proxyAddr), errors.Unwrap(err))
 	}
 	if u.Scheme != "socks5" {
 		return nil, nil, fmt.Errorf("UDP associate needs a socks5 upstream, got %q", u.Scheme)
@@ -165,7 +168,7 @@ func (s *SocksServer) dialUpstreamUDPAssociate(key string) (net.Conn, *net.UDPAd
 		return nil, nil, err
 	}
 
-	log.Debugf("SOCKS5 UDP associate via %s relay %s", proxyAddr, relayAddr)
+	log.Debugf("SOCKS5 UDP associate via %s relay %s", helper.RedactProxy(proxyAddr), relayAddr)
 
 	return ctrl, relayAddr, nil
 }
