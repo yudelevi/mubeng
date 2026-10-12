@@ -297,3 +297,38 @@ func TestDialUpstreamUnknownScheme(t *testing.T) {
 		t.Fatal("expected error for unsupported scheme")
 	}
 }
+
+// curl's MASQUE attempt (HTTP/3 via an HTTP proxy) is a GET to the proxy's own
+// address; it must be answered locally, never forwarded to an upstream.
+func TestSelfTargetedRequestIsNotForwarded(t *testing.T) {
+	upstreamAddr, received, stopUpstream := startCapturingOrigin(t)
+	defer stopUpstream()
+	mubengAddr, stopMubeng := startTestMubeng(t, []string{"http://" + upstreamAddr}, true)
+	defer stopMubeng()
+	_, port, _ := net.SplitHostPort(mubengAddr)
+
+	for _, host := range []string{"localhost:" + port, mubengAddr} {
+		conn, err := net.DialTimeout("tcp", mubengAddr, 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := "http://" + host + "/.well-known/masque/udp/example.com/443/"
+		if _, err := conn.Write([]byte("GET " + target + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+		conn.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusNotImplemented {
+			t.Errorf("%s: status = %d, want 501", host, resp.StatusCode)
+		}
+	}
+
+	select {
+	case got := <-received:
+		t.Fatalf("upstream received a forwarded request: %q", got)
+	case <-time.After(500 * time.Millisecond):
+	}
+}

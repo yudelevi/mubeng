@@ -45,6 +45,12 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 		return req, serverErr(req)
 	}
 
+	// curl's MASQUE (HTTP/3 through an HTTP proxy) addresses mubeng itself; forwarded,
+	// the upstream sees a request to localhost:<our port>. A 501 makes curl fall back to CONNECT.
+	if isSelfTarget(req) {
+		return req, goproxy.NewResponse(req, mime, http.StatusNotImplemented, "Request addressed to the proxy itself is not forwarded")
+	}
+
 	if metricsEnabled {
 		metrics.ActiveConnections.Inc()
 		defer metrics.ActiveConnections.Dec()
@@ -515,4 +521,32 @@ func nonProxy(w http.ResponseWriter, req *http.Request) {
 
 func serverErr(req *http.Request) *http.Response {
 	return goproxy.NewResponse(req, mime, http.StatusBadGateway, "Proxy server error")
+}
+
+// isSelfTarget reports whether req is addressed to the listener that received it:
+// a loopback host on the port this connection arrived on.
+func isSelfTarget(req *http.Request) bool {
+	local, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok {
+		return false
+	}
+	_, localPort, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return false
+	}
+
+	port := req.URL.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[req.URL.Scheme]
+	}
+	if port != localPort {
+		return false
+	}
+
+	host := strings.ToLower(req.URL.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
