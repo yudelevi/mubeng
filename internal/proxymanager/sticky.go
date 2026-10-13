@@ -7,6 +7,10 @@ import (
 
 const defaultStickyTTL = 10 * time.Minute
 
+// maxConsecutiveRefusals bounds how long a pin survives an upstream that keeps
+// refusing targets, so an exit that has lost its own connectivity still rotates.
+const maxConsecutiveRefusals = 5
+
 // Sticky pins one upstream per session key so every connection carrying that
 // key egresses through the same proxy. It wraps a ProxyManager: on a miss it
 // rotates a fresh upstream and pins the concrete (already EvalFunc-expanded)
@@ -28,6 +32,7 @@ type stickyPin struct {
 	upstream   string
 	generation uint64
 	expires    time.Time
+	refusals   int
 }
 
 // NewSticky starts a store with a background janitor sweeping idle pins.
@@ -114,6 +119,43 @@ func (s *Sticky) Drop(key string) {
 	if existed && cb != nil {
 		cb(n)
 	}
+}
+
+// Refused records that key's pinned upstream answered but could not reach the
+// target (a dead third-party host, a closed port). The exit itself is fine, so
+// the pin stays until maxConsecutiveRefusals in a row; reports whether it was
+// dropped.
+func (s *Sticky) Refused(key string) bool {
+	s.mu.Lock()
+	pin, ok := s.pins[key]
+	if !ok {
+		s.mu.Unlock()
+		return false
+	}
+	pin.refusals++
+	if pin.refusals < maxConsecutiveRefusals {
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.pins, key)
+	n := len(s.pins)
+	cb := s.onChange
+	s.mu.Unlock()
+
+	if cb != nil {
+		cb(n)
+	}
+
+	return true
+}
+
+// Succeeded resets key's refusal streak.
+func (s *Sticky) Succeeded(key string) {
+	s.mu.Lock()
+	if pin, ok := s.pins[key]; ok {
+		pin.refusals = 0
+	}
+	s.mu.Unlock()
 }
 
 // Len reports the current pin count.

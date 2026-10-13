@@ -20,6 +20,7 @@ import (
 	"github.com/mubeng/mubeng/common"
 	"github.com/mubeng/mubeng/internal/metrics"
 	"github.com/mubeng/mubeng/internal/proxygateway"
+	"github.com/mubeng/mubeng/pkg/helper"
 	"github.com/mubeng/mubeng/pkg/helper/awsurl"
 	"github.com/mubeng/mubeng/pkg/mubeng"
 	"h12.io/socks"
@@ -44,6 +45,12 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 		return req, serverErr(req)
 	}
 
+	// curl's MASQUE (HTTP/3 through an HTTP proxy) addresses mubeng itself; forwarded,
+	// the upstream sees a request to localhost:<our port>. A 501 makes curl fall back to CONNECT.
+	if isSelfTarget(req) {
+		return req, goproxy.NewResponse(req, mime, http.StatusNotImplemented, "Request addressed to the proxy itself is not forwarded")
+	}
+
 	if metricsEnabled {
 		metrics.ActiveConnections.Inc()
 		defer metrics.ActiveConnections.Dec()
@@ -65,7 +72,7 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 		i := 0
 		for {
 			proxy := p.pickProxy(sessionKey)
-			result.proxy = proxy
+			result.proxy = helper.RedactProxy(proxy)
 
 			retryablehttpClient, err := p.getClient(r, proxy)
 			if err != nil {
@@ -89,8 +96,8 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 			resp, err := retryablehttpClient.Do(retryablehttpRequest)
 			if err != nil {
 				if metricsEnabled {
-					metrics.RetriesTotal.WithLabelValues(proxy).Inc()
-					metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeFailure).Inc()
+					metrics.RetriesTotal.WithLabelValues(result.proxy).Inc()
+					metrics.ProxyAttemptsTotal.WithLabelValues(result.proxy, metrics.OutcomeFailure).Inc()
 				}
 
 				// Drop the pin on any failed attempt — including the final one
@@ -149,7 +156,7 @@ func (p *Proxy) onRequest(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Reque
 			resp.Body = io.NopCloser(bytes.NewBuffer(buf))
 
 			if metricsEnabled {
-				metrics.ProxyAttemptsTotal.WithLabelValues(proxy, metrics.OutcomeSuccess).Inc()
+				metrics.ProxyAttemptsTotal.WithLabelValues(result.proxy, metrics.OutcomeSuccess).Inc()
 			}
 
 			result.response = resp
@@ -244,14 +251,28 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 	for i := 0; i < attempts; i++ {
 		proxyAddr := p.pickProxy(sessionKey)
 		conn, err := p.dialUpstream(proxyAddr, network, addr)
+		sticky := p.Options.HTTPSticky != nil && sessionKey != ""
 		if err == nil {
-			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, proxyAddr)
+			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, helper.RedactProxy(proxyAddr))
+			if sticky {
+				p.Options.HTTPSticky.Succeeded(sessionKey)
+			}
 			return conn, nil
 		}
 		lastErr = err
-		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, proxyAddr, err)
+		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, helper.RedactProxy(proxyAddr), err)
 
-		if p.Options.HTTPSticky != nil && sessionKey != "" {
+		// A session shares one pin across every host it talks to, so one dead
+		// third-party host must not move the whole session to a new exit IP.
+		if sticky && isTargetRefusal(err) {
+			// Residential upstreams refuse IPv6 targets outright (502, or a bogus 407)
+			// and the browser falls back to IPv4, so those say nothing about the exit.
+			if !isIPv6Literal(addr) {
+				p.Options.HTTPSticky.Refused(sessionKey)
+			}
+			return nil, err
+		}
+		if sticky {
 			p.Options.HTTPSticky.Drop(sessionKey)
 		}
 		if p.Options.RemoveOnErr {
@@ -278,7 +299,7 @@ func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) 
 	}
 	u, err := url.Parse(proxyAddr)
 	if err != nil {
-		return nil, fmt.Errorf("parse proxy %q: %w", proxyAddr, err)
+		return nil, fmt.Errorf("parse proxy %s: %w", helper.RedactProxy(proxyAddr), errors.Unwrap(err))
 	}
 
 	switch u.Scheme {
@@ -294,7 +315,7 @@ func (p *Proxy) dialUpstream(proxyAddr, network, addr string) (net.Conn, error) 
 		}
 		dial := p.HTTPProxy.NewConnectDialToProxyWithHandler(proxyAddr, authHandler)
 		if dial == nil {
-			return nil, fmt.Errorf("unsupported proxy URL: %s", proxyAddr)
+			return nil, fmt.Errorf("unsupported proxy URL: %s", helper.RedactProxy(proxyAddr))
 		}
 		return dial(network, addr)
 	case "socks4", "socks4a", "socks5":
@@ -312,6 +333,22 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 	}
 
 	return resp
+}
+
+// isTargetRefusal reports whether an upstream HTTP proxy answered the CONNECT
+// with a non-200 (e.g. 502 "Host Not Found"), as opposed to being unreachable.
+// goproxy only surfaces that as an error string.
+func isTargetRefusal(err error) bool {
+	return strings.HasPrefix(err.Error(), goproxyRefusalPrefix)
+}
+
+func isIPv6Literal(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
 }
 
 // proxyAuthUser extracts the username from a Basic Proxy-Authorization header,
@@ -388,7 +425,7 @@ func (p *Proxy) removeProxy(target string) {
 	}
 
 	if metricsEnabled {
-		metrics.ProxyRemovalsTotal.WithLabelValues(target).Inc()
+		metrics.ProxyRemovalsTotal.WithLabelValues(helper.RedactProxy(target)).Inc()
 		if p.Options.OnPoolChange != nil {
 			p.Options.OnPoolChange()
 		} else {
@@ -514,4 +551,32 @@ func nonProxy(w http.ResponseWriter, req *http.Request) {
 
 func serverErr(req *http.Request) *http.Response {
 	return goproxy.NewResponse(req, mime, http.StatusBadGateway, "Proxy server error")
+}
+
+// isSelfTarget reports whether req is addressed to the listener that received it:
+// a loopback host on the port this connection arrived on.
+func isSelfTarget(req *http.Request) bool {
+	local, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok {
+		return false
+	}
+	_, localPort, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return false
+	}
+
+	port := req.URL.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[req.URL.Scheme]
+	}
+	if port != localPort {
+		return false
+	}
+
+	host := strings.ToLower(req.URL.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
