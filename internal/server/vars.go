@@ -21,3 +21,7 @@ var (
 
 	mutex = sync.Mutex{}
 )
+
+// goproxyRefusalPrefix starts the error goproxy returns when an upstream proxy
+// answers a CONNECT with a non-200 status.
+const goproxyRefusalPrefix = "proxy refused connection"

@@ -251,14 +251,28 @@ func (p *Proxy) connectDial(req *http.Request, network, addr string) (net.Conn, 
 	for i := 0; i < attempts; i++ {
 		proxyAddr := p.pickProxy(sessionKey)
 		conn, err := p.dialUpstream(proxyAddr, network, addr)
+		sticky := p.Options.HTTPSticky != nil && sessionKey != ""
 		if err == nil {
 			log.Debugf("%s CONNECT %s via %s", req.RemoteAddr, addr, helper.RedactProxy(proxyAddr))
+			if sticky {
+				p.Options.HTTPSticky.Succeeded(sessionKey)
+			}
 			return conn, nil
 		}
 		lastErr = err
 		log.Debugf("%s CONNECT %s via %s failed: %s", req.RemoteAddr, addr, helper.RedactProxy(proxyAddr), err)
 
-		if p.Options.HTTPSticky != nil && sessionKey != "" {
+		// A session shares one pin across every host it talks to, so one dead
+		// third-party host must not move the whole session to a new exit IP.
+		if sticky && isTargetRefusal(err) {
+			// Residential upstreams refuse IPv6 targets outright (502, or a bogus 407)
+			// and the browser falls back to IPv4, so those say nothing about the exit.
+			if !isIPv6Literal(addr) {
+				p.Options.HTTPSticky.Refused(sessionKey)
+			}
+			return nil, err
+		}
+		if sticky {
 			p.Options.HTTPSticky.Drop(sessionKey)
 		}
 		if p.Options.RemoveOnErr {
@@ -319,6 +333,22 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 	}
 
 	return resp
+}
+
+// isTargetRefusal reports whether an upstream HTTP proxy answered the CONNECT
+// with a non-200 (e.g. 502 "Host Not Found"), as opposed to being unreachable.
+// goproxy only surfaces that as an error string.
+func isTargetRefusal(err error) bool {
+	return strings.HasPrefix(err.Error(), goproxyRefusalPrefix)
+}
+
+func isIPv6Literal(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
 }
 
 // proxyAuthUser extracts the username from a Basic Proxy-Authorization header,

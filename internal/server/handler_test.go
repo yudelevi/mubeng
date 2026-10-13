@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,5 +332,92 @@ func TestSelfTargetedRequestIsNotForwarded(t *testing.T) {
 	case got := <-received:
 		t.Fatalf("upstream received a forwarded request: %q", got)
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// startRefusingUpstream is an HTTP proxy that answers CONNECT to "dead:443"
+// with 502 (as residential providers do for an unresolvable host) and 200 to
+// anything else, counting the CONNECTs it sees.
+func startRefusingUpstream(t *testing.T) (addr string, connects *int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var n int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				req, err := http.ReadRequest(bufio.NewReader(c))
+				if err != nil {
+					return
+				}
+				atomic.AddInt32(&n, 1)
+				if req.Host == "dead:443" || strings.HasPrefix(req.Host, "[") {
+					_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+					return
+				}
+				_, _ = c.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+			}(c)
+		}
+	}()
+	return ln.Addr().String(), &n
+}
+
+func TestConnectDialStickyKeepsPinOnTargetRefusal(t *testing.T) {
+	addrA, connectsA := startRefusingUpstream(t)
+	addrB, connectsB := startRefusingUpstream(t)
+	f, err := os.CreateTemp("", "mubeng-refusal-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	_, _ = f.WriteString("http://" + addrA + "\nhttp://" + addrB + "\n")
+	f.Close()
+	pm, err := proxymanager.New(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sticky := proxymanager.NewSticky(pm, "sequent", time.Minute)
+	t.Cleanup(sticky.Close)
+	p := &Proxy{
+		HTTPProxy: goproxy.NewProxyHttpServer(),
+		Options: &common.Options{
+			ProxyManager: pm, Method: "sequent", HTTPSticky: sticky, Rotate: 1,
+			MaxRetries: 3, MaxErrors: 4, RotateOnErr: true,
+		},
+	}
+	req := &http.Request{Header: http.Header{}}
+	req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("alice:x")))
+
+	pinned := p.pickProxy("alice")
+	if _, err := p.connectDial(req, "tcp", "dead:443"); err == nil {
+		t.Fatal("want refusal error for dead target")
+	}
+	if got := p.pickProxy("alice"); got != pinned {
+		t.Fatalf("refusal moved the pin: %q -> %q", pinned, got)
+	}
+	if total := atomic.LoadInt32(connectsA) + atomic.LoadInt32(connectsB); total != 1 {
+		t.Fatalf("refusal was retried on other exits: %d CONNECTs", total)
+	}
+	conn, err := p.connectDial(req, "tcp", "alive:443")
+	if err != nil {
+		t.Fatalf("live target through same pin: %v", err)
+	}
+	conn.Close()
+
+	for i := 0; i < 10; i++ {
+		if _, err := p.connectDial(req, "tcp", "[2606:4700::1]:443"); err == nil {
+			t.Fatal("want refusal for IPv6 target")
+		}
+	}
+	if got := p.pickProxy("alice"); got != pinned {
+		t.Fatalf("IPv6 refusals moved the pin: %q -> %q", pinned, got)
 	}
 }

@@ -154,3 +154,31 @@ func TestStickyDistinctKeysAndOnChange(t *testing.T) {
 		t.Fatalf("after Drop: Len=%d last=%d", s.Len(), last)
 	}
 }
+
+func TestStickyRefusalsKeepPinUntilCap(t *testing.T) {
+	mgr := stickyManager(t, "http://a:1", "http://b:2")
+	s := NewSticky(mgr, "sequent", time.Minute)
+	defer s.Close()
+
+	first, _ := s.Get("k")
+	for i := 0; i < maxConsecutiveRefusals-1; i++ {
+		if s.Refused("k") {
+			t.Fatalf("pin dropped after %d refusals", i+1)
+		}
+		s.Succeeded("k")
+		s.Refused("k")
+		s.Succeeded("k")
+	}
+	if got, _ := s.Get("k"); got != first {
+		t.Fatalf("refusals moved the pin: %q != %q", got, first)
+	}
+	for i := 0; i < maxConsecutiveRefusals-1; i++ {
+		s.Refused("k")
+	}
+	if !s.Refused("k") {
+		t.Fatal("pin survived maxConsecutiveRefusals in a row")
+	}
+	if s.Len() != 0 {
+		t.Fatalf("want pin gone, Len=%d", s.Len())
+	}
+}
