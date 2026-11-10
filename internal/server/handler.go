@@ -339,7 +339,16 @@ func (p *Proxy) onResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 // with a non-200 (e.g. 502 "Host Not Found"), as opposed to being unreachable.
 // goproxy only surfaces that as an error string.
 func isTargetRefusal(err error) bool {
-	return strings.HasPrefix(err.Error(), goproxyRefusalPrefix)
+	msg := err.Error()
+	if !strings.HasPrefix(msg, goproxyRefusalPrefix) {
+		return false
+	}
+	for _, title := range exitFailureTitles {
+		if strings.Contains(msg, title) {
+			return false
+		}
+	}
+	return true
 }
 
 func isIPv6Literal(addr string) bool {

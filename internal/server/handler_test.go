@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -419,5 +420,77 @@ func TestConnectDialStickyKeepsPinOnTargetRefusal(t *testing.T) {
 	}
 	if got := p.pickProxy("alice"); got != pinned {
 		t.Fatalf("IPv6 refusals moved the pin: %q -> %q", pinned, got)
+	}
+}
+
+// startExitTimeoutUpstream answers every CONNECT with proxyrack's 565, the exit
+// node timing out before it reaches any target.
+func startExitTimeoutUpstream(t *testing.T) (addr string, connects *int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var n int32
+	body := "<html><head><title>565 Proxy Handshake Failed</title></head><body><p>The exit node has timed out.</p></body></html>"
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				if _, err := http.ReadRequest(bufio.NewReader(c)); err != nil {
+					return
+				}
+				atomic.AddInt32(&n, 1)
+				_, _ = c.Write([]byte("HTTP/1.1 565 Proxy Handshake Failed\r\nContent-Type: text/html\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body))
+			}(c)
+		}
+	}()
+	return ln.Addr().String(), &n
+}
+
+func TestConnectDialStickyRotatesOnExitTimeout(t *testing.T) {
+	deadAddr, deadConnects := startExitTimeoutUpstream(t)
+	liveAddr, liveConnects := startRefusingUpstream(t)
+	f, err := os.CreateTemp("", "mubeng-exit-timeout-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	_, _ = f.WriteString("http://" + deadAddr + "\nhttp://" + liveAddr + "\n")
+	f.Close()
+	pm, err := proxymanager.New(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sticky := proxymanager.NewSticky(pm, "sequent", time.Minute)
+	t.Cleanup(sticky.Close)
+	p := &Proxy{
+		HTTPProxy: goproxy.NewProxyHttpServer(),
+		Options: &common.Options{
+			ProxyManager: pm, Method: "sequent", HTTPSticky: sticky, Rotate: 1,
+			MaxRetries: 3, MaxErrors: 4, RotateOnErr: true,
+		},
+	}
+	req := &http.Request{Header: http.Header{}}
+	req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("bob:x")))
+
+	if pinned := p.pickProxy("bob"); pinned != "http://"+deadAddr {
+		t.Fatalf("test setup: pin = %q, want the timing-out exit", pinned)
+	}
+	conn, err := p.connectDial(req, "tcp", "alive:443")
+	if err != nil {
+		t.Fatalf("565 from the exit was not retried on another exit: %v", err)
+	}
+	conn.Close()
+	if atomic.LoadInt32(deadConnects) != 1 || atomic.LoadInt32(liveConnects) != 1 {
+		t.Fatalf("CONNECTs dead=%d live=%d, want 1 and 1", atomic.LoadInt32(deadConnects), atomic.LoadInt32(liveConnects))
+	}
+	if got := p.pickProxy("bob"); got != "http://"+liveAddr {
+		t.Fatalf("pin did not move off the timing-out exit: %q", got)
 	}
 }
